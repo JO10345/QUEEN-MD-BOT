@@ -1,0 +1,96 @@
+/**
+ * Chatbot Feature — auto-replies to non-command messages using the AI API.
+ * Independent toggles for PM and Group chats.
+ *
+ * Group rule: to avoid spam, the bot only replies in groups when it is
+ * mentioned (@bot) or when someone replies to one of the bot's messages.
+ * In PMs, it replies to every non-command text message.
+ */
+
+import axios from 'axios';
+
+const AI_BASE = 'https://all-in-1-ais.officialhectormanuel.workers.dev';
+
+let pmEnabled    = process.env.CHATBOT_PM_ENABLED    === 'true';
+let groupEnabled = process.env.CHATBOT_GROUP_ENABLED === 'true';
+
+const histories = new Map();
+
+export function isChatbotPmEnabled()    { return pmEnabled; }
+export function isChatbotGroupEnabled() { return groupEnabled; }
+export function setChatbotPm(v)    { pmEnabled    = Boolean(v); }
+export function setChatbotGroup(v) { groupEnabled = Boolean(v); }
+
+function bareJid(jid) {
+  if (!jid) return '';
+  return jid.split(':')[0].split('@')[0];
+}
+
+/**
+ * @returns {Promise<boolean>} true if the bot replied
+ */
+export async function handleChatbot(sock, msg, body, botJid) {
+  const jid = msg.key.remoteJid;
+  if (!jid) return false;
+
+  const isGroup = jid.endsWith('@g.us');
+  const isPm    = jid.endsWith('@s.whatsapp.net');
+
+  if (isGroup && !groupEnabled) return false;
+  if (isPm    && !pmEnabled)    return false;
+  if (!isGroup && !isPm)        return false;
+
+  // In groups, only respond when mentioned or when replying to the bot
+  let cleanBody = body;
+  if (isGroup) {
+    const ctxInfo    = msg.message?.extendedTextMessage?.contextInfo || {};
+    const mentioned  = ctxInfo.mentionedJid || [];
+    const repliedTo  = ctxInfo.participant || '';
+    const botBare    = bareJid(botJid);
+
+    const isMentioned  = botBare && mentioned.some(m => bareJid(m) === botBare);
+    const isReplyToBot = botBare && bareJid(repliedTo) === botBare;
+
+    if (!isMentioned && !isReplyToBot) return false;
+
+    // Strip the @mention from the message so the AI doesn't see it
+    cleanBody = body.replace(/@\d+/g, '').trim();
+    if (!cleanBody) return false;
+  }
+
+  const sender = msg.key.participant || jid;
+  const model  = process.env.AI_MODEL          || 'gemini';
+  const limit  = parseInt(process.env.AI_HISTORY_LIMIT || '10');
+
+  try {
+    let history = histories.get(sender) || [];
+    history.push({ role: 'user', content: cleanBody });
+    if (history.length > limit) history = history.slice(-limit);
+
+    const ctx = history.slice(-5)
+      .map(h => `${h.role === 'user' ? 'User' : 'Bot'}: ${h.content}`)
+      .join('\n');
+
+    const res = await axios.get(`${AI_BASE}/`, {
+      params: { query: ctx, model },
+      timeout: 30_000,
+    });
+
+    const reply = res.data?.message?.content;
+    if (!reply) return false;
+
+    history.push({ role: 'assistant', content: reply });
+    histories.set(sender, history);
+
+    await sock.sendMessage(jid, { text: reply }, { quoted: msg });
+    return true;
+  } catch (err) {
+    console.error('Chatbot error:', err.message);
+    return false;
+  }
+}
+
+export function clearChatbotHistory(sender) {
+  if (sender) histories.delete(sender);
+  else histories.clear();
+}
