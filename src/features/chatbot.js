@@ -14,7 +14,8 @@ const AI_BASE = 'https://all-in-1-ais.officialhectormanuel.workers.dev';
 let pmEnabled    = process.env.CHATBOT_PM_ENABLED    === 'true';
 let groupEnabled = process.env.CHATBOT_GROUP_ENABLED === 'true';
 
-const histories = new Map();
+const histories = new Map();   // sender -> [{role, content}]
+const inflight  = new Set();   // senders currently being processed
 
 export function isChatbotPmEnabled()    { return pmEnabled; }
 export function isChatbotGroupEnabled() { return groupEnabled; }
@@ -24,6 +25,15 @@ export function setChatbotGroup(v) { groupEnabled = Boolean(v); }
 function bareJid(jid) {
   if (!jid) return '';
   return jid.split(':')[0].split('@')[0];
+}
+
+// The AI API echoes "Bot: ..." in its replies — strip it so history stays clean
+function cleanReply(text) {
+  if (!text) return '';
+  return text
+    .replace(/^\s*Bot\s*:\s*/i, '')
+    .replace(/^\s*Assistant\s*:\s*/i, '')
+    .trim();
 }
 
 /**
@@ -59,34 +69,70 @@ export async function handleChatbot(sock, msg, body, botJid) {
   }
 
   const sender = msg.key.participant || jid;
-  const model  = process.env.AI_MODEL          || 'gemini';
-  const limit  = parseInt(process.env.AI_HISTORY_LIMIT || '10');
+
+  // Prevent overlapping replies for the same sender (avoids confusion when
+  // someone fires multiple messages quickly while the AI is still working)
+  if (inflight.has(sender)) return false;
+  inflight.add(sender);
+
+  const model       = process.env.AI_MODEL              || 'gemini';
+  const limit       = parseInt(process.env.AI_HISTORY_LIMIT || '6');
+  const botName     = process.env.BOT_NAME              || 'Queen MD Bot';
 
   try {
-    let history = histories.get(sender) || [];
-    history.push({ role: 'user', content: cleanBody });
-    if (history.length > limit) history = history.slice(-limit);
+    // Show typing indicator
+    try {
+      await sock.sendPresenceUpdate('composing', jid);
+    } catch {}
 
-    const ctx = history.slice(-5)
-      .map(h => `${h.role === 'user' ? 'User' : 'Bot'}: ${h.content}`)
-      .join('\n');
+    // Build short context — only last 2 turns (4 entries) keeps the AI focused
+    let history = histories.get(sender) || [];
+
+    const recent = history.slice(-4); // last 2 user + 2 assistant turns
+    const ctxLines = recent.map(h =>
+      `${h.role === 'user' ? 'User' : 'Bot'}: ${h.content}`
+    );
+    ctxLines.push(`User: ${cleanBody}`);
+    const query = ctxLines.join('\n');
 
     const res = await axios.get(`${AI_BASE}/`, {
-      params: { query: ctx, model },
+      params:  { query, model },
       timeout: 30_000,
     });
 
-    const reply = res.data?.message?.content;
-    if (!reply) return false;
+    const rawReply = res.data?.message?.content;
+    if (!rawReply) {
+      console.error('Chatbot: empty AI response', JSON.stringify(res.data).slice(0, 200));
+      await sock.sendMessage(jid, {
+        text: '⚠️ AI gave an empty response. Try again.',
+      }, { quoted: msg });
+      return false;
+    }
 
+    const reply = cleanReply(rawReply);
+
+    // Update history WITHOUT the "Bot:" prefix so context stays clean
+    history.push({ role: 'user',      content: cleanBody });
     history.push({ role: 'assistant', content: reply });
+    if (history.length > limit * 2) history = history.slice(-limit * 2);
     histories.set(sender, history);
+
+    try {
+      await sock.sendPresenceUpdate('paused', jid);
+    } catch {}
 
     await sock.sendMessage(jid, { text: reply }, { quoted: msg });
     return true;
   } catch (err) {
     console.error('Chatbot error:', err.message);
+    try {
+      await sock.sendMessage(jid, {
+        text: `⚠️ ${botName} couldn't respond right now. Try again in a moment.`,
+      }, { quoted: msg });
+    } catch {}
     return false;
+  } finally {
+    inflight.delete(sender);
   }
 }
 
