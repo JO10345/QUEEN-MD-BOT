@@ -9,8 +9,11 @@
  *   !autoreact on/off   → toggle BOTH
  */
 
-let pmEnabled    = process.env.AUTOREACT_PM_ENABLED    !== 'false'; // default ON
-let groupEnabled = process.env.AUTOREACT_GROUP_ENABLED === 'true';  // default OFF
+import { getState, setState } from './state.js';
+
+// Toggles persist across restarts via state.json.
+let pmEnabled    = getState('autoreact_pm',    process.env.AUTOREACT_PM_ENABLED    !== 'false'); // default ON
+let groupEnabled = getState('autoreact_group', process.env.AUTOREACT_GROUP_ENABLED === 'true');  // default OFF
 
 const DEFAULT_EMOJIS = [
   '❤️', '👍', '😂', '😮', '😢', '😡',
@@ -31,14 +34,14 @@ function randomEmoji() {
 
 export function isAutoReactPmEnabled()    { return pmEnabled; }
 export function isAutoReactGroupEnabled() { return groupEnabled; }
-export function setAutoReactPm(v)    { pmEnabled    = Boolean(v); }
-export function setAutoReactGroup(v) { groupEnabled = Boolean(v); }
+export function setAutoReactPm(v)    { pmEnabled    = Boolean(v); setState('autoreact_pm',    pmEnabled);    }
+export function setAutoReactGroup(v) { groupEnabled = Boolean(v); setState('autoreact_group', groupEnabled); }
 
 // Backward-compat helpers (toggle both at once)
 export function isAutoReactEnabled() { return pmEnabled || groupEnabled; }
 export function setAutoReact(v) {
-  pmEnabled    = Boolean(v);
-  groupEnabled = Boolean(v);
+  setAutoReactPm(v);
+  setAutoReactGroup(v);
 }
 
 /**
