@@ -44,6 +44,12 @@ import {
   clearChatbotHistory,
 } from './features/chatbot.js';
 import { handleUpdate } from './features/update.js';
+import { handleImage }  from './features/image.js';
+import {
+  handleShip, handleFact, handleCompliment,
+  handleTruth, handleDare, handleDice, handleCoin,
+  handle8ball, handleHug,
+} from './features/cute.js';
 
 // ── New features ─────────────────────────────────────────────────────────────
 import { handleSticker }      from './features/sticker.js';
@@ -75,6 +81,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PREFIX       = process.env.PREFIX       || '!';
 const BOT_NAME     = process.env.BOT_NAME     || 'Queen MD Bot';
 const OWNER_NUMBER = process.env.OWNER_NUMBER || '';
+const OWNER_NAME   = process.env.OWNER_NAME   || 'fizu';
+const CREATED_BY   = process.env.CREATED_BY   || 'TECH';
 const DEBUG        = process.env.DEBUG === 'true';
 
 const FEATURES = {
@@ -93,6 +101,8 @@ const FEATURES = {
   fun:       process.env.FUN_ENABLED       !== 'false',
   poll:      process.env.POLL_ENABLED      !== 'false',
   quiz:      process.env.QUIZ_ENABLED      !== 'false',
+  image:     process.env.IMAGE_ENABLED     !== 'false',
+  cute:      process.env.CUTE_ENABLED      !== 'false',
 };
 
 // ─── Directories ──────────────────────────────────────────────────────────────
@@ -166,34 +176,62 @@ function isGroupAdmin(meta, jid) {
   );
 }
 
+// ─── Decorative owner name (bold + small-caps + sparkles) ────────────────────
+const SMALL_CAPS = {
+  a:'ᴀ',b:'ʙ',c:'ᴄ',d:'ᴅ',e:'ᴇ',f:'ꜰ',g:'ɢ',h:'ʜ',i:'ɪ',j:'ᴊ',k:'ᴋ',l:'ʟ',m:'ᴍ',
+  n:'ɴ',o:'ᴏ',p:'ᴘ',q:'ǫ',r:'ʀ',s:'ꜱ',t:'ᴛ',u:'ᴜ',v:'ᴠ',w:'ᴡ',x:'x',y:'ʏ',z:'ᴢ',
+};
+function smallCaps(str) {
+  return [...String(str)].map(ch => SMALL_CAPS[ch.toLowerCase()] || ch).join('');
+}
+function fancyOwner(name) {
+  return `╭⊱✿  *${smallCaps(name)}*  ✿⊰╮`;
+}
+
 // ─── Build help text ──────────────────────────────────────────────────────────
 function buildHelpText() {
   const P = PREFIX;
+  const now = new Date();
+  const time = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
   const lines = [
-    `╔══════════════════════════╗\n`,
-    `║    👑 *${BOT_NAME}*\n`,
-    `╠══════════════════════════╣\n`,
-    `║  🛠️ *Created by:* TECH\n`,
-    `║  👤 *Owner:* ✪𝕗𝕚𝕫𝕦✪\n`,
-    `╚══════════════════════════╝\n`,
-    `━━━━━━━━━━━━━━━━━━━━━━━\n`,
+    `╭━━━━━ ❀ ━━━━━╮`,
+    `   ✨ *${BOT_NAME}* ✨`,
+    `╰━━━━━ ❀ ━━━━━╯`,
+    ``,
+    `  🌸 *Hello!* — ${time}`,
+    `  🛠️ *Crafted by:* _${CREATED_BY}_`,
+    `  ${fancyOwner(OWNER_NAME)}`,
+    ``,
+    `╭─❍ ⋆｡˚ *Commands* ˚｡⋆ ❍─╮`,
   ];
 
-  if (FEATURES.music)     lines.push(`🎵 *Music*\n${P}music <song> | ${P}mp3 <song>\n`);
-  if (FEATURES.youtube)   lines.push(`📹 *YouTube*\n${P}yt <link or search>\n`);
-  if (FEATURES.weather)   lines.push(`🌤️ *Weather*\n${P}weather <city> | ${P}w <city>\n`);
-  if (FEATURES.ai)        lines.push(`🤖 *AI Chat*\n${P}ai <question> | ${P}ask | ${P}chat\n${P}clear — reset memory\n`);
-  if (FEATURES.sticker)   lines.push(`🖼️ *Sticker*\n${P}sticker — send image with caption\n`);
-  if (FEATURES.translate) lines.push(`🌐 *Translate*\n${P}translate <lang> <text>\n_e.g. ${P}translate es Hello_\n`);
-  if (FEATURES.group)     lines.push(`👥 *Group (admin)*\n${P}kick | ${P}add | ${P}promote | ${P}demote\n${P}tagall | ${P}mute | ${P}unmute | ${P}groupinfo\n`);
-  if (FEATURES.reminder)  lines.push(`⏰ *Reminder*\n${P}remind <time> <text>\n_e.g. ${P}remind 10m Check oven_\n`);
-  if (FEATURES.imagine)   lines.push(`🎨 *AI Image*\n${P}imagine <description>\n`);
-  if (FEATURES.calc)      lines.push(`🧮 *Calculator*\n${P}calc <expression>\n_e.g. ${P}calc 15% of 200_\n`);
-  if (FEATURES.currency)  lines.push(`💱 *Currency*\n${P}convert <amount> <from> <to>\n_e.g. ${P}convert 100 USD NGN_\n`);
-  if (FEATURES.news)      lines.push(`📰 *News*\n${P}news [country/topic]\n_e.g. ${P}news ng | ${P}news bitcoin_\n`);
-  if (FEATURES.fun)       lines.push(`😄 *Fun*\n${P}quote — random quote\n${P}joke — random joke\n`);
-  if (FEATURES.poll)      lines.push(`📊 *Poll*\n${P}poll Q | Opt1 | Opt2\n${P}vote <n> | ${P}pollresults | ${P}endpoll\n`);
-  if (FEATURES.quiz)      lines.push(`🧠 *Quiz*\n${P}quiz [topic] — start a question\n${P}answer A/B/C/D — submit answer\n${P}quizstats | ${P}quiztop | ${P}endquiz\nTopics: general, science, history, sports, music, movies, geography, computers\n`);
+  if (FEATURES.music)     lines.push(`\n🎵 *Music*\n  › ${P}music <song>  ·  ${P}mp3 <song>`);
+  if (FEATURES.youtube)   lines.push(`\n📹 *YouTube*\n  › ${P}yt <link or search>`);
+  if (FEATURES.weather)   lines.push(`\n🌤️ *Weather*\n  › ${P}weather <city>  ·  ${P}w <city>`);
+  if (FEATURES.ai)        lines.push(`\n🤖 *AI Chat*\n  › ${P}ai <question>  ·  ${P}ask  ·  ${P}chat\n  › ${P}clear — reset memory`);
+  if (FEATURES.image)     lines.push(`\n🖼️ *Image Search*\n  › ${P}img <query>  ·  ${P}gimg <query>\n  _Searches the web for real photos_`);
+  if (FEATURES.sticker)   lines.push(`\n🌟 *Sticker*\n  › ${P}sticker — send image with caption`);
+  if (FEATURES.translate) lines.push(`\n🌐 *Translate*\n  › ${P}translate <lang> <text>\n  _e.g. ${P}translate es Hello_`);
+  if (FEATURES.group)     lines.push(`\n👥 *Group (admin)*\n  › ${P}kick · ${P}add · ${P}promote · ${P}demote\n  › ${P}tagall · ${P}mute · ${P}unmute · ${P}groupinfo`);
+  if (FEATURES.reminder)  lines.push(`\n⏰ *Reminder*\n  › ${P}remind <time> <text>\n  _e.g. ${P}remind 10m Check oven_`);
+  if (FEATURES.imagine)   lines.push(`\n🎨 *AI Image*\n  › ${P}imagine <description>`);
+  if (FEATURES.calc)      lines.push(`\n🧮 *Calculator*\n  › ${P}calc <expression>\n  _e.g. ${P}calc 15% of 200_`);
+  if (FEATURES.currency)  lines.push(`\n💱 *Currency*\n  › ${P}convert <amount> <from> <to>\n  _e.g. ${P}convert 100 USD NGN_`);
+  if (FEATURES.news)      lines.push(`\n📰 *News*\n  › ${P}news [country/topic]\n  _e.g. ${P}news ng  ·  ${P}news bitcoin_`);
+  if (FEATURES.fun)       lines.push(`\n😄 *Fun*\n  › ${P}quote · ${P}joke`);
+  if (FEATURES.cute)      lines.push(
+    `\n💕 *Cute & Games*\n` +
+    `  › ${P}ship <a> <b> — love calculator\n` +
+    `  › ${P}fact — random fun fact\n` +
+    `  › ${P}compliment — kind words 🌹\n` +
+    `  › ${P}truth · ${P}dare\n` +
+    `  › ${P}8ball <question?>\n` +
+    `  › ${P}dice [sides] · ${P}coin\n` +
+    `  › ${P}hug [name] 🤗`
+  );
+  if (FEATURES.poll)      lines.push(`\n📊 *Poll*\n  › ${P}poll Q | Opt1 | Opt2\n  › ${P}vote <n> · ${P}pollresults · ${P}endpoll`);
+  if (FEATURES.quiz)      lines.push(`\n🧠 *Quiz*\n  › ${P}quiz [topic] — start\n  › ${P}answer A/B/C/D — submit\n  › ${P}quizstats · ${P}quiztop · ${P}endquiz\n  _Topics: general, science, history, sports,_\n  _music, movies, geography, computers_`);
 
   const arPm = isAutoReactPmEnabled()    ? '🟢' : '🔴';
   const arGr = isAutoReactGroupEnabled() ? '🟢' : '🔴';
@@ -201,19 +239,12 @@ function buildHelpText() {
   const cbGr = isChatbotGroupEnabled()   ? '🟢' : '🔴';
 
   lines.push(
-    `ℹ️ *General*\n` +
-    `${P}ping | ${P}botinfo | ${P}help\n\n` +
-    `💬 *Auto-React*  PM:${arPm}  Group:${arGr}\n` +
-    `${P}autoreact pm on/off\n${P}autoreact group on/off\n\n` +
-    `🤖 *Chatbot (AI auto-reply)*  PM:${cbPm}  Group:${cbGr}\n` +
-    `${P}chatbot pm on/off\n${P}chatbot group on/off\n${P}chatbot reset\n` +
-    `_In groups, replies only when @mentioned or replied-to._\n\n` +
-    `👑 *Owner Only*\n` +
-    `${P}setppbot — change profile pic\n` +
-    `${P}setbio <text> — change bio\n` +
-    `${P}update — pull latest from GitHub\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━━━━\n` +
-    `_Powered by ${BOT_NAME}_`
+    `\nℹ️ *General*\n  › ${P}ping · ${P}botinfo · ${P}help` +
+    `\n\n💬 *Auto-React*  PM:${arPm}  Group:${arGr}\n  › ${P}autoreact pm on/off\n  › ${P}autoreact group on/off` +
+    `\n\n🤖 *Chatbot (AI auto-reply)*  PM:${cbPm}  Group:${cbGr}\n  › ${P}chatbot pm on/off\n  › ${P}chatbot group on/off\n  › ${P}chatbot reset\n  _In groups, replies only when @mentioned or replied-to._` +
+    `\n\n👑 *Owner Only*\n  › ${P}setppbot — change profile pic\n  › ${P}setbio <text> — change bio\n  › ${P}update — pull latest from GitHub` +
+    `\n\n╰─────── ❀ ───────╯` +
+    `\n     _♡ Powered by ${BOT_NAME} ♡_`
   );
   return lines.join('\n');
 }
@@ -368,6 +399,26 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     if (!FEATURES.fun) { await sock.sendMessage(jid, { text: '❌ Fun features are disabled.' }); return; }
     await handleJoke(sock, msg);
     return;
+  }
+
+  // ── Image Search (Bing scrape, no key needed) ────────────────────────────
+  if (cmd === 'img' || cmd === 'gimg' || cmd === 'gimage' || cmd === 'imgsearch') {
+    if (!FEATURES.image) { await sock.sendMessage(jid, { text: '❌ Image search is disabled.' }); return; }
+    await handleImage(sock, msg, args);
+    return;
+  }
+
+  // ── Cute & Games ─────────────────────────────────────────────────────────
+  if (FEATURES.cute) {
+    if (cmd === 'ship' || cmd === 'love')          { await handleShip(sock, msg, args);       return; }
+    if (cmd === 'fact' || cmd === 'didyouknow')    { await handleFact(sock, msg);             return; }
+    if (cmd === 'compliment' || cmd === 'comp')    { await handleCompliment(sock, msg);       return; }
+    if (cmd === 'truth')                            { await handleTruth(sock, msg);            return; }
+    if (cmd === 'dare')                             { await handleDare(sock, msg);             return; }
+    if (cmd === 'dice' || cmd === 'roll')          { await handleDice(sock, msg, args);       return; }
+    if (cmd === 'coin' || cmd === 'flip')          { await handleCoin(sock, msg);             return; }
+    if (cmd === '8ball' || cmd === 'eightball')    { await handle8ball(sock, msg, args);      return; }
+    if (cmd === 'hug')                              { await handleHug(sock, msg, args);        return; }
   }
 
   // ── Poll System ───────────────────────────────────────────────────────────
@@ -574,8 +625,11 @@ async function startBot() {
   }
 
   // ── Connection events ──────────────────────────────────────────────────────
+  let reconnecting = false;
   sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
     if (connection === 'close') {
+      if (reconnecting) return; // guard against duplicate close events
+      reconnecting = true;
       const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
       const willRetry  = statusCode !== DisconnectReason.loggedOut;
       console.log(`⚠️  Connection closed [${statusCode}]. Retrying: ${willRetry}`);
@@ -592,13 +646,35 @@ async function startBot() {
   });
 
   // ── Message handler ────────────────────────────────────────────────────────
+  // Dedupe set: WhatsApp sometimes delivers the same message id more than
+  // once (resync, reconnect, multi-device echo). Process each id at most once.
+  const seen = new Set();
+  const SEEN_MAX = 500;
+
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    // Only process brand-new incoming messages — skip history sync ('append',
+    // 'prepend') which would replay old messages and cause duplicate replies.
+    if (type !== 'notify') return;
+
     for (const msg of messages) {
       try {
         const jid = msg.key?.remoteJid;
         if (!jid) continue;
         if (!msg.message) continue;
         if (isJidBroadcast(jid) || isJidStatusBroadcast(jid)) continue;
+
+        // Dedupe by message id
+        const msgId = msg.key.id;
+        if (msgId) {
+          if (seen.has(msgId)) continue;
+          seen.add(msgId);
+          if (seen.size > SEEN_MAX) {
+            // trim oldest entries
+            const arr = Array.from(seen);
+            seen.clear();
+            for (const id of arr.slice(-Math.floor(SEEN_MAX / 2))) seen.add(id);
+          }
+        }
 
         const fromMe = msg.key.fromMe;
         const sender = fromMe ? (sock.user?.id || jid) : (msg.key.participant || jid);
