@@ -350,7 +350,7 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
   }
 
   // ── Group Management ──────────────────────────────────────────────────────
-  if (['kick','add','promote','demote','tagall','groupinfo','mute','unmute'].includes(cmd)) {
+  if (['kick','add','promote','demote','tagall','groupinfo','mute','unmute','botinfo'].includes(cmd)) {
     if (!FEATURES.group) { await sock.sendMessage(jid, { text: '❌ Group feature is disabled.' }); return; }
     await handleGroup(sock, msg, cmd, args, OWNER_NUMBER);
     return;
@@ -638,17 +638,51 @@ async function startBot() {
 
   // ── Connection events ──────────────────────────────────────────────────────
   let reconnecting = false;
+
+  // Watchdog: restart if the bot goes silent (no message activity) for 10 min.
+  // "Bad MAC" leaves the socket "open" but unable to decrypt — this catches it.
+  let lastActivity = Date.now();
+  const WATCHDOG_MS   = 10 * 60 * 1000; // 10 minutes
+  const WATCHDOG_TICK =      60 * 1000; // check every 1 minute
+
+  const watchdog = setInterval(() => {
+    if (Date.now() - lastActivity > WATCHDOG_MS) {
+      if (reconnecting) return;
+      reconnecting = true;
+      console.warn('⚠️  Watchdog: no activity for 10 min — reconnecting...');
+      clearInterval(watchdog);
+      try { sock.end(new Error('watchdog')); } catch {}
+      setTimeout(startBot, 3000);
+    }
+  }, WATCHDOG_TICK);
+
   sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
     if (connection === 'close') {
+      clearInterval(watchdog);
       if (reconnecting) return; // guard against duplicate close events
       reconnecting = true;
-      const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
-      const willRetry  = statusCode !== DisconnectReason.loggedOut;
-      console.log(`⚠️  Connection closed [${statusCode}]. Retrying: ${willRetry}`);
-      if (willRetry) setTimeout(startBot, 5000);
-      else { console.log('Logged out. Delete auth_info/ and restart.'); process.exit(0); }
+
+      const err        = lastDisconnect?.error;
+      const statusCode = new Boom(err)?.output?.statusCode;
+      const errMsg     = (err?.message || '').toLowerCase();
+
+      // "Bad MAC" means Signal session is corrupt — reconnect clears it
+      const isBadMac = errMsg.includes('bad mac') || errMsg.includes('badmac');
+      const willRetry = !isBadMac && statusCode !== DisconnectReason.loggedOut;
+
+      if (isBadMac) {
+        console.warn('⚠️  Bad MAC error detected — reconnecting to resync session...');
+        setTimeout(startBot, 5000);
+      } else if (willRetry) {
+        console.log(`⚠️  Connection closed [${statusCode}]. Retrying in 5 s...`);
+        setTimeout(startBot, 5000);
+      } else {
+        console.log('Logged out. Delete auth_info/ and restart.');
+        process.exit(0);
+      }
     }
     if (connection === 'open') {
+      lastActivity = Date.now(); // reset watchdog on connect
       console.log(`\n✅ ${BOT_NAME} is LIVE on WhatsApp!`);
       console.log(`   Commands start with: ${PREFIX}`);
       console.log(`   Send ${PREFIX}help to any chat to test`);
@@ -687,6 +721,8 @@ async function startBot() {
             for (const id of arr.slice(-Math.floor(SEEN_MAX / 2))) seen.add(id);
           }
         }
+
+        lastActivity = Date.now(); // keep watchdog happy
 
         const fromMe = msg.key.fromMe;
         const sender = fromMe ? (sock.user?.id || jid) : (msg.key.participant || jid);
@@ -757,6 +793,29 @@ console.log(`║  👑  ${BOT_NAME}`.padEnd(39) + '║');
 console.log(`║  Prefix: ${PREFIX}  |  Debug: ${DEBUG ? 'ON' : 'OFF'}`.padEnd(39) + '║');
 console.log(`║  Features: 15 command groups         ║`);
 console.log('╚══════════════════════════════════════╝\n');
+
+// ── Global crash guards ───────────────────────────────────────────────────────
+// Prevent "Bad MAC" or any other uncaught error from silently killing the bot.
+// Instead, log it and restart cleanly after a short delay.
+process.on('uncaughtException', err => {
+  const msg = (err?.message || '').toLowerCase();
+  if (msg.includes('bad mac') || msg.includes('badmac')) {
+    console.warn('⚡ Uncaught Bad MAC — restarting in 5 s...');
+  } else {
+    console.error('⚡ Uncaught exception:', err.message);
+  }
+  setTimeout(() => startBot().catch(e => { console.error('Fatal restart:', e.message); process.exit(1); }), 5000);
+});
+
+process.on('unhandledRejection', (reason) => {
+  const msg = (String(reason?.message || reason || '')).toLowerCase();
+  if (msg.includes('bad mac') || msg.includes('badmac')) {
+    console.warn('⚡ Unhandled Bad MAC — restarting in 5 s...');
+    setTimeout(() => startBot().catch(e => { console.error('Fatal restart:', e.message); process.exit(1); }), 5000);
+  } else {
+    console.error('⚡ Unhandled rejection:', reason);
+  }
+});
 
 startBot().catch(err => {
   console.error('Fatal:', err.message);
