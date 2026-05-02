@@ -34,8 +34,17 @@ function getSenderJid(msg) {
   return `${num}@s.whatsapp.net`;
 }
 
+function bareNum(jid) {
+  if (!jid) return '';
+  return jid.split(':')[0].split('@')[0].replace(/[^0-9]/g, '');
+}
+
 function isAdmin(meta, jid) {
-  return meta.participants.some(p => (p.id === jid || p.id.startsWith(jid.split('@')[0])) && p.admin);
+  // Match by bare phone-number digits — handles device-suffix JIDs
+  // like "923120754178:12@s.whatsapp.net" that don't equal "923120754178@s.whatsapp.net".
+  const senderNum = bareNum(jid);
+  if (!senderNum) return false;
+  return meta.participants.some(p => bareNum(p.id) === senderNum && p.admin);
 }
 
 export async function handleGroup(sock, msg, cmd, args, ownerNumber) {
