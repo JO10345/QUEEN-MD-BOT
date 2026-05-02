@@ -72,6 +72,29 @@ export async function handleGroup(sock, msg, cmd, args, ownerNumber) {
 
   const senderIsAdmin = isAdmin(meta, sender) || senderIsOwner;
 
+  // ── !botinfo — no permission needed, anyone can run it ────────────────────
+  if (cmd === 'botinfo') {
+    const botNum    = bareNum(botJid);
+    const rawBotId  = sock.user?.id || 'unknown';
+    const adminList = meta.participants
+      .filter(p => p.admin)
+      .map(p => `  • +${bareNum(p.id)} (${p.admin})`)
+      .join('\n') || '  (none)';
+    const senderNum = bareNum(msg.key.participant || msg.key.remoteJid || '');
+    await sock.sendMessage(jid, {
+      text:
+        `🤖 *Bot Diagnostic*\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `📱 *Bot raw ID:* ${rawBotId}\n` +
+        `📱 *Bot number:* +${botNum}\n` +
+        `🛡️ *Bot is admin:* ${isBotAdmin ? '✅ YES' : '❌ NO — open group info → make +' + botNum + ' an admin'}\n` +
+        `👤 *Your number:* +${senderNum}\n` +
+        `👤 *You are admin:* ${senderIsAdmin ? '✅ YES' : '❌ NO'}\n\n` +
+        `*Current admins in group:*\n${adminList}`,
+    }, { quoted: msg });
+    return;
+  }
+
   // ── Commands that don't need admin ─────────────────────────────────────────
   if (cmd === 'groupinfo') {
     const admins = meta.participants.filter(p => p.admin).length;
@@ -99,25 +122,6 @@ export async function handleGroup(sock, msg, cmd, args, ownerNumber) {
   // ── Admin-only commands ─────────────────────────────────────────────────────
   if (!senderIsAdmin) {
     await sock.sendMessage(jid, { text: '❌ Only group admins can use this command.' });
-    return;
-  }
-
-  // ── botinfo — diagnostic command, no admin needed ──────────────────────────
-  if (cmd === 'botinfo') {
-    const botNum    = bareNum(botJid);
-    const adminList = meta.participants
-      .filter(p => p.admin)
-      .map(p => `  • +${bareNum(p.id)} (${p.admin})`)
-      .join('\n') || '  (none)';
-    await sock.sendMessage(jid, {
-      text:
-        `🤖 *Bot Status in this Group*\n` +
-        `━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `📱 *Bot number:* +${botNum}\n` +
-        `🛡️ *Bot is admin:* ${isBotAdmin ? '✅ YES' : '❌ NO — make +' + botNum + ' an admin!'}\n` +
-        `👤 *You are admin:* ${senderIsAdmin ? '✅ YES' : '❌ NO'}\n\n` +
-        `*Group admins:*\n${adminList}`,
-    }, { quoted: msg });
     return;
   }
 
