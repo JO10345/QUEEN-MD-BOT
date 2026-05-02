@@ -72,6 +72,10 @@ export async function handleGroup(sock, msg, cmd, args, ownerNumber) {
 
   const senderIsAdmin = isAdmin(meta, sender) || senderIsOwner;
 
+  // If the bot runs on the SAME number as the owner and that number is a group
+  // admin, treat the bot as having admin rights (same account = same permissions).
+  const effectiveBotAdmin = isBotAdmin || (senderIsOwner && senderIsAdmin);
+
   // ── !botinfo — no permission needed, anyone can run it ────────────────────
   if (cmd === 'botinfo') {
     const botNum    = bareNum(botJid);
@@ -135,7 +139,7 @@ export async function handleGroup(sock, msg, cmd, args, ownerNumber) {
     }, { quoted: msg });
 
   if (cmd === 'kick') {
-    if (!isBotAdmin) { await needBotAdmin(); return; }
+    if (!effectiveBotAdmin) { await needBotAdmin(); return; }
     const targets = getMentions(msg);
     if (!targets.length) { await sock.sendMessage(jid, { text: `❌ Usage: *!kick @user*` }); return; }
     await sock.groupParticipantsUpdate(jid, targets, 'remove');
@@ -144,7 +148,7 @@ export async function handleGroup(sock, msg, cmd, args, ownerNumber) {
   }
 
   if (cmd === 'add') {
-    if (!isBotAdmin) { await needBotAdmin(); return; }
+    if (!effectiveBotAdmin) { await needBotAdmin(); return; }
     const num = args.replace(/[^0-9]/g, '');
     if (!num) { await sock.sendMessage(jid, { text: `❌ Usage: *!add 2348012345678*` }); return; }
     const target = `${num}@s.whatsapp.net`;
@@ -154,7 +158,7 @@ export async function handleGroup(sock, msg, cmd, args, ownerNumber) {
   }
 
   if (cmd === 'promote') {
-    if (!isBotAdmin) { await needBotAdmin(); return; }
+    if (!effectiveBotAdmin) { await needBotAdmin(); return; }
     const targets = getMentions(msg);
     if (!targets.length) { await sock.sendMessage(jid, { text: `❌ Usage: *!promote @user*` }); return; }
     await sock.groupParticipantsUpdate(jid, targets, 'promote');
@@ -163,7 +167,7 @@ export async function handleGroup(sock, msg, cmd, args, ownerNumber) {
   }
 
   if (cmd === 'demote') {
-    if (!isBotAdmin) { await needBotAdmin(); return; }
+    if (!effectiveBotAdmin) { await needBotAdmin(); return; }
     const targets = getMentions(msg);
     if (!targets.length) { await sock.sendMessage(jid, { text: `❌ Usage: *!demote @user*` }); return; }
     await sock.groupParticipantsUpdate(jid, targets, 'demote');
@@ -172,14 +176,14 @@ export async function handleGroup(sock, msg, cmd, args, ownerNumber) {
   }
 
   if (cmd === 'mute') {
-    if (!isBotAdmin) { await needBotAdmin(); return; }
+    if (!effectiveBotAdmin) { await needBotAdmin(); return; }
     await sock.groupSettingUpdate(jid, 'announcement');
     await sock.sendMessage(jid, { text: '🔇 Group muted — only admins can send messages.' }, { quoted: msg });
     return;
   }
 
   if (cmd === 'unmute') {
-    if (!isBotAdmin) { await needBotAdmin(); return; }
+    if (!effectiveBotAdmin) { await needBotAdmin(); return; }
     await sock.groupSettingUpdate(jid, 'not_announcement');
     await sock.sendMessage(jid, { text: '🔊 Group unmuted — everyone can send messages.' }, { quoted: msg });
     return;
