@@ -73,6 +73,12 @@ import {
   handleEndPoll,
 } from './features/poll.js';
 import {
+  handleAutoStatus,
+  handleAutoStatusCommand,
+  isAutoStatusViewEnabled,
+  isAutoStatusReplyEnabled,
+} from './features/autostatus.js';
+import {
   handleQuiz,
   handleAnswer,
   handleQuizStats,
@@ -248,6 +254,7 @@ function buildHelpText() {
     `\n\n💬 *Auto-React*  PM:${arPm}  Group:${arGr}\n  › ${P}autoreact pm on/off\n  › ${P}autoreact group on/off` +
     `\n\n🤖 *Chatbot (AI auto-reply)*  PM:${cbPm}  Group:${cbGr}\n  › ${P}chatbot pm on/off\n  › ${P}chatbot group on/off\n  › ${P}chatbot reset\n  _In groups, replies only when @mentioned or replied-to._` +
     `\n\n🚫 *Antilink (per group)*\n  › ${P}antilink on / off\n  › ${P}antilink list\n  _Auto-deletes links from non-admins_` +
+    `\n\n👁️ *Auto Status View*  View:${isAutoStatusViewEnabled() ? '🟢' : '🔴'}  Reply:${isAutoStatusReplyEnabled() ? '🟢' : '🔴'}\n  › ${P}autostatus on / off\n  › ${P}autostatus reply on / off\n  _Views all statuses + replies APKA STATUS DEKH LIYA ♥️_` +
     `\n\n👑 *Owner Only*\n  › ${P}setppbot — change profile pic\n  › ${P}setbio <text> — change bio\n  › ${P}update — pull latest from GitHub` +
     `\n\n╰─────── ❀ ───────╯` +
     `\n     _♡ Powered by ${BOT_NAME} ♡_`
@@ -541,6 +548,13 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
+  // ── Auto Status View (owner only) ────────────────────────────────────────
+  if (cmd === 'autostatus') {
+    if (!owner) { await sock.sendMessage(jid, { text: '❌ Owner only.' }); return; }
+    await handleAutoStatusCommand(sock, msg, args);
+    return;
+  }
+
   // ── Update from GitHub ────────────────────────────────────────────────────
   if (cmd === 'update' || cmd === 'upgrade') {
     if (!owner) { await sock.sendMessage(jid, { text: '❌ Owner only.' }); return; }
@@ -707,7 +721,14 @@ async function startBot() {
         const jid = msg.key?.remoteJid;
         if (!jid) continue;
         if (!msg.message) continue;
-        if (isJidBroadcast(jid) || isJidStatusBroadcast(jid)) continue;
+
+        // ── Auto status view — handle BEFORE broadcast filter ────────────────
+        if (jid === 'status@broadcast' || isJidStatusBroadcast(jid)) {
+          await handleAutoStatus(sock, msg);
+          continue;
+        }
+
+        if (isJidBroadcast(jid)) continue;
 
         // Dedupe by message id
         const msgId = msg.key.id;
