@@ -46,6 +46,11 @@ import {
 import { handleUpdate } from './features/update.js';
 import { handleImage }  from './features/image.js';
 import {
+  handleAntilink,
+  handleAntilinkCommand,
+  isAntilinkOn,
+} from './features/antilink.js';
+import {
   handleShip, handleFact, handleCompliment,
   handleTruth, handleDare, handleDice, handleCoin,
   handle8ball, handleHug,
@@ -242,6 +247,7 @@ function buildHelpText() {
     `\nℹ️ *General*\n  › ${P}ping · ${P}botinfo · ${P}help` +
     `\n\n💬 *Auto-React*  PM:${arPm}  Group:${arGr}\n  › ${P}autoreact pm on/off\n  › ${P}autoreact group on/off` +
     `\n\n🤖 *Chatbot (AI auto-reply)*  PM:${cbPm}  Group:${cbGr}\n  › ${P}chatbot pm on/off\n  › ${P}chatbot group on/off\n  › ${P}chatbot reset\n  _In groups, replies only when @mentioned or replied-to._` +
+    `\n\n🚫 *Antilink (per group)*\n  › ${P}antilink on / off\n  › ${P}antilink list\n  _Auto-deletes links from non-admins_` +
     `\n\n👑 *Owner Only*\n  › ${P}setppbot — change profile pic\n  › ${P}setbio <text> — change bio\n  › ${P}update — pull latest from GitHub` +
     `\n\n╰─────── ❀ ───────╯` +
     `\n     _♡ Powered by ${BOT_NAME} ♡_`
@@ -529,6 +535,12 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
+  // ── Antilink (per-group) — owner OR group admin can use ─────────────────
+  if (cmd === 'antilink' || cmd === 'nolink') {
+    await handleAntilinkCommand(sock, msg, args, OWNER_NUMBER);
+    return;
+  }
+
   // ── Update from GitHub ────────────────────────────────────────────────────
   if (cmd === 'update' || cmd === 'upgrade') {
     if (!owner) { await sock.sendMessage(jid, { text: '❌ Owner only.' }); return; }
@@ -699,16 +711,35 @@ async function startBot() {
 
         if (fromMe && !isCmd) continue;
 
+        // Antilink runs FIRST on group messages — it deletes link posts
+        // from non-admins. Owner is exempt.
+        if (!fromMe && jid.endsWith('@g.us')) {
+          const removed = await handleAntilink(sock, msg, body, OWNER_NUMBER);
+          if (removed) continue; // message was deleted, no further processing
+        }
+
         if (isCmd && cmd) {
           await handleCommand(sock, msg, jid, sender, cmd, args, hasImg);
         } else if (!isCmd && !fromMe) {
-          // 1. Static autoreply patterns (hi, bye, etc.)
-          const reply = findAutoreply(body, BOT_NAME);
-          if (reply) {
-            await sock.sendMessage(jid, { text: reply }, { quoted: msg });
-          } else {
-            // 2. AI chatbot (DMs always, groups only when mentioned/replied to)
-            await handleChatbot(sock, msg, body, sock.user?.id || '');
+          // Decide who replies. The AI chatbot takes priority when it's
+          // enabled for this chat type — otherwise static autoreplies were
+          // silently swallowing every "hi"/"hello" before the AI could see it.
+          const isGroup     = jid.endsWith('@g.us');
+          const isPm        = jid.endsWith('@s.whatsapp.net');
+          const chatbotOn   = (isPm && isChatbotPmEnabled()) || (isGroup && isChatbotGroupEnabled());
+
+          let handled = false;
+          if (chatbotOn) {
+            // 1. Try AI chatbot first (PMs always, groups only when @mentioned/replied)
+            handled = await handleChatbot(sock, msg, body, sock.user?.id || '');
+          }
+
+          if (!handled) {
+            // 2. Fallback to static autoreplies (hi, bye, etc.)
+            const reply = findAutoreply(body, BOT_NAME);
+            if (reply) {
+              await sock.sendMessage(jid, { text: reply }, { quoted: msg });
+            }
           }
         }
 
