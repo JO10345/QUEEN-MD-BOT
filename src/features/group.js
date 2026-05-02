@@ -176,16 +176,26 @@ export async function handleGroup(sock, msg, cmd, args, ownerNumber) {
   }
 
   if (cmd === 'mute') {
-    if (!effectiveBotAdmin) { await needBotAdmin(); return; }
-    await sock.groupSettingUpdate(jid, 'announcement');
-    await sock.sendMessage(jid, { text: '🔇 Group muted — only admins can send messages.' }, { quoted: msg });
+    try {
+      await sock.groupSettingUpdate(jid, 'announcement');
+      await sock.sendMessage(jid, { text: '🔇 Group muted — only admins can send messages.' }, { quoted: msg });
+    } catch (err) {
+      await sock.sendMessage(jid, {
+        text: `❌ Could not mute group.\nReason: ${err.message}\n\nMake sure *+${bareNum(botJid)}* is a group admin.`,
+      }, { quoted: msg });
+    }
     return;
   }
 
   if (cmd === 'unmute') {
-    if (!effectiveBotAdmin) { await needBotAdmin(); return; }
-    await sock.groupSettingUpdate(jid, 'not_announcement');
-    await sock.sendMessage(jid, { text: '🔊 Group unmuted — everyone can send messages.' }, { quoted: msg });
+    try {
+      await sock.groupSettingUpdate(jid, 'not_announcement');
+      await sock.sendMessage(jid, { text: '🔊 Group unmuted — everyone can send messages.' }, { quoted: msg });
+    } catch (err) {
+      await sock.sendMessage(jid, {
+        text: `❌ Could not unmute group.\nReason: ${err.message}\n\nMake sure *+${bareNum(botJid)}* is a group admin.`,
+      }, { quoted: msg });
+    }
     return;
   }
 }
