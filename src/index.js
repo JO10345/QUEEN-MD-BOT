@@ -1,12 +1,17 @@
-import 'dotenv/config';
-import makeWASocket, {
+// Load .env — graceful fallback if dotenv isn't installed yet
+try { await import('dotenv/config'); } catch { /* env vars already set, or run npm install */ }
+// Baileys ships as CJS — handle both direct ESM and CJS-via-ESM interop
+import baileysPkg from '@whiskeysockets/baileys';
+const _baileys = baileysPkg.default || baileysPkg;
+const makeWASocket = typeof _baileys === 'function' ? _baileys : _baileys.makeWASocket;
+const {
   DisconnectReason,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   isJidBroadcast,
   isJidStatusBroadcast,
-} from '@whiskeysockets/baileys';
+} = _baileys;
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import { existsSync, mkdirSync } from 'fs';
@@ -17,7 +22,7 @@ import axios from 'axios';
 
 // ── Existing features ────────────────────────────────────────────────────────
 import { handleMusic }              from './features/music.js';
-import { handleYouTube }            from './features/youtube.js';
+import { handleYouTube, handleYtDl, handleYtAudio } from './features/youtube.js';
 import { handleWeather }            from './features/weather.js';
 import { handleAI, clearAIHistory } from './features/ai.js';
 import { findAutoreply }            from './features/autoreplies.js';
@@ -44,6 +49,12 @@ import {
   clearChatbotHistory,
 } from './features/chatbot.js';
 import { handleUpdate } from './features/update.js';
+import {
+  isAutoTypingEnabled,
+  setAutoTyping,
+  sendTyping,
+  stopTyping,
+} from './features/autotyping.js';
 import { handleImage }  from './features/image.js';
 import {
   handleAntilink,
@@ -218,7 +229,7 @@ function buildHelpText() {
   ];
 
   if (FEATURES.music)     lines.push(`\n🎵 *Music*\n  › ${P}music <song>  ·  ${P}mp3 <song>`);
-  if (FEATURES.youtube)   lines.push(`\n📹 *YouTube*\n  › ${P}yt <link or search>`);
+  if (FEATURES.youtube)   lines.push(`\n📹 *YouTube*\n  › ${P}yt <link or search> — shows quality menu\n  › ${P}ytdl <quality> — download (360, 480, 144, mp3)\n  › ${P}yta <link or search> — audio/mp3 only`);
   if (FEATURES.weather)   lines.push(`\n🌤️ *Weather*\n  › ${P}weather <city>  ·  ${P}w <city>`);
   if (FEATURES.ai)        lines.push(`\n🤖 *AI Chat*\n  › ${P}ai <question>  ·  ${P}ask  ·  ${P}chat\n  › ${P}clear — reset memory`);
   if (FEATURES.image)     lines.push(`\n🖼️ *Image Search*\n  › ${P}img <query>  ·  ${P}gimg <query>\n  _Searches the web for real photos_`);
@@ -249,8 +260,10 @@ function buildHelpText() {
   const cbPm = isChatbotPmEnabled()      ? '🟢' : '🔴';
   const cbGr = isChatbotGroupEnabled()   ? '🟢' : '🔴';
 
+  const atIcon = isAutoTypingEnabled() ? '🟢' : '🔴';
   lines.push(
     `\nℹ️ *General*\n  › ${P}ping · ${P}botinfo · ${P}help` +
+    `\n\n⌨️ *Auto-Typing*  ${atIcon}\n  › ${P}autotyping on / off\n  _Shows "typing…" before every reply_` +
     `\n\n💬 *Auto-React*  PM:${arPm}  Group:${arGr}\n  › ${P}autoreact pm on/off\n  › ${P}autoreact group on/off` +
     `\n\n🤖 *Chatbot (AI auto-reply)*  PM:${cbPm}  Group:${cbGr}\n  › ${P}chatbot pm on/off\n  › ${P}chatbot group on/off\n  › ${P}chatbot reset\n  _In groups, replies only when @mentioned or replied-to._` +
     `\n\n🚫 *Antilink (per group)*\n  › ${P}antilink on / off\n  › ${P}antilink list\n  _Auto-deletes links from non-admins_` +
@@ -322,6 +335,18 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     if (!FEATURES.youtube) { await sock.sendMessage(jid, { text: '❌ YouTube feature is disabled.' }); return; }
     if (!args)             { await sock.sendMessage(jid, { text: `Usage: *${PREFIX}yt <URL or search query>*` }); return; }
     await handleYouTube(sock, msg, args);
+    return;
+  }
+
+  if (cmd === 'ytdl' || cmd === 'ytdownload') {
+    if (!FEATURES.youtube) { await sock.sendMessage(jid, { text: '❌ YouTube feature is disabled.' }); return; }
+    await handleYtDl(sock, msg, args);
+    return;
+  }
+
+  if (cmd === 'yta' || cmd === 'ytaudio' || cmd === 'ytmp3') {
+    if (!FEATURES.youtube) { await sock.sendMessage(jid, { text: '❌ YouTube feature is disabled.' }); return; }
+    await handleYtAudio(sock, msg, args);
     return;
   }
 
@@ -483,6 +508,23 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
+  // ── Auto-Typing ───────────────────────────────────────────────────────────
+  if (cmd === 'autotyping' || cmd === 'autotype') {
+    if (!owner) { await sock.sendMessage(jid, { text: '❌ Owner only.' }); return; }
+    const a = args.toLowerCase().trim();
+    const statusText = () =>
+      `⌨️ *Auto-Typing:* ${isAutoTypingEnabled() ? '🟢 ON' : '🔴 OFF'}\n\n` +
+      `_Shows "typing…" indicator before every reply._\n\n` +
+      `Toggle:\n  ${PREFIX}autotyping on\n  ${PREFIX}autotyping off`;
+
+    if (a === 'on')       setAutoTyping(true);
+    else if (a === 'off') setAutoTyping(false);
+    else { await sock.sendMessage(jid, { text: statusText() }, { quoted: msg }); return; }
+
+    await sock.sendMessage(jid, { text: '✅ Updated.\n\n' + statusText() }, { quoted: msg });
+    return;
+  }
+
   // ── Auto-React ────────────────────────────────────────────────────────────
   if (cmd === 'autoreact') {
     if (!owner) { await sock.sendMessage(jid, { text: '❌ Owner only.' }); return; }
@@ -596,31 +638,118 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
   // Unknown — ignore silently
 }
 
+// ─── Message cache (helps Baileys retry failed decrypts without Bad MAC) ──────
+// Keeps the last 200 messages in memory so getMessage() returns real content.
+const msgCache = new Map();
+const MSG_CACHE_MAX = 200;
+function cacheMsg(msg) {
+  if (!msg?.key?.id) return;
+  msgCache.set(msg.key.id, msg);
+  if (msgCache.size > MSG_CACHE_MAX) {
+    msgCache.delete(msgCache.keys().next().value);
+  }
+}
+
+// ─── Reconnect backoff ────────────────────────────────────────────────────────
+// Exponential backoff: 5 s → 10 s → 20 s → 40 s → 60 s (max)
+let retryCount = 0;
+function nextRetryDelay() {
+  const delay = Math.min(5000 * Math.pow(2, retryCount), 60_000);
+  retryCount++;
+  return delay;
+}
+
+// ─── Startup guard ────────────────────────────────────────────────────────────
+// Prevents two concurrent startBot() instances from running simultaneously.
+let botStarting = false;
+
 // ─── Main bot ─────────────────────────────────────────────────────────────────
 async function startBot() {
-  const phone = await resolvePhoneNumber();
+  if (botStarting) {
+    console.warn('⚠️  startBot() already in progress — skipping duplicate call');
+    return;
+  }
+  botStarting = true;
+
+  let phone;
+  try {
+    phone = await resolvePhoneNumber();
+  } finally {
+    botStarting = false;
+  }
 
   if (!phone || phone.length < 5) {
     console.error('\n❌ Invalid phone number. Set PHONE_NUMBER in .env and restart.\n');
     process.exit(1);
   }
 
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-  const { version }          = await fetchLatestBaileysVersion();
+  botStarting = true;
+  try {
+    await _runBot(phone);
+  } catch (err) {
+    botStarting = false;
+    console.error('❌ Bot crashed unexpectedly:', err.message);
+    const delay = nextRetryDelay();
+    console.log(`⏳ Restarting in ${delay / 1000} s...`);
+    setTimeout(startBot, delay);
+  }
+}
 
-  console.log(`\n📡 Connecting with Baileys v${version.join('.')}...`);
+async function _runBot(phone) {
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+
+  // Always try to use the pinned WA version first; fall back to Baileys bundled
+  let version;
+  try {
+    ({ version } = await fetchLatestBaileysVersion());
+  } catch {
+    version = [2, 3000, 1015901307];
+  }
+
+  console.log(`\n📡 Connecting with Baileys v${version.join('.')} (6.17.16)...`);
 
   const sock = makeWASocket({
     version,
     logger,
-    printQRInTerminal: false,
+    printQRInTerminal:            false,
+    markOnlineOnConnect:          false,  // don't show "online" — reduces WA throttling
+    syncFullHistory:              false,  // skip full chat history sync on connect
+    generateHighQualityLinkPreview: false, // reduce overhead; enable if you need link previews
+    connectTimeoutMs:             60_000, // fail fast if WA unreachable
+    defaultQueryTimeoutMs:        30_000, // per-query timeout
+    keepAliveIntervalMs:          25_000, // ping WA every 25 s to keep connection alive
+    retryRequestDelayMs:          2_000,  // wait 2 s before retrying failed requests
     auth: {
       creds: state.creds,
       keys:  makeCacheableSignalKeyStore(state.keys, logger),
     },
-    generateHighQualityLinkPreview: true,
-    defaultQueryTimeoutMs: 60_000,
-    getMessage: async () => ({ conversation: '' }),
+    // Provide real messages for Baileys retry logic — dramatically reduces Bad MAC
+    getMessage: async (key) => {
+      const cached = msgCache.get(key.id);
+      if (cached?.message) return cached.message;
+      return { conversation: '' };
+    },
+    patchMessageBeforeSending: (message) => {
+      const requiresPatch = !!(
+        message.buttonsMessage
+        || message.templateMessage
+        || message.listMessage
+      );
+      if (requiresPatch) {
+        message = {
+          viewOnceMessage: {
+            message: {
+              messageContextInfo: {
+                deviceListMetadataVersion: 2,
+                deviceListMetadata:        {},
+              },
+              ...message,
+            },
+          },
+        };
+      }
+      return message;
+    },
   });
 
   sock.ev.on('creds.update', saveCreds);
@@ -644,6 +773,7 @@ async function startBot() {
       console.log('╚══════════════════════════════════════════╝\n');
     } catch (err) {
       console.error('❌ Pairing code error:', err.message);
+      botStarting = false;
       process.exit(1);
     }
   } else {
@@ -666,41 +796,59 @@ async function startBot() {
       console.warn('⚠️  Watchdog: no activity for 10 min — reconnecting...');
       clearInterval(watchdog);
       try { sock.end(new Error('watchdog')); } catch {}
-      setTimeout(startBot, 3000);
+      botStarting = false;
+      setTimeout(startBot, nextRetryDelay());
     }
   }, WATCHDOG_TICK);
 
-  sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
+  sock.ev.on('connection.update', ({ connection, lastDisconnect, qr, receivedPendingNotifications }) => {
+    if (receivedPendingNotifications) {
+      // All pending messages delivered — reset backoff, bot is stable
+      retryCount = 0;
+    }
+
     if (connection === 'close') {
       clearInterval(watchdog);
       if (reconnecting) return; // guard against duplicate close events
       reconnecting = true;
+      botStarting  = false;
 
       const err        = lastDisconnect?.error;
       const statusCode = new Boom(err)?.output?.statusCode;
       const errMsg     = (err?.message || '').toLowerCase();
 
-      // "Bad MAC" means Signal session is corrupt — reconnect clears it
-      const isBadMac = errMsg.includes('bad mac') || errMsg.includes('badmac');
-      const willRetry = !isBadMac && statusCode !== DisconnectReason.loggedOut;
+      const isBadMac   = errMsg.includes('bad mac') || errMsg.includes('badmac');
+      const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+      const isConflict  = statusCode === DisconnectReason.connectionReplaced;
 
-      if (isBadMac) {
-        console.warn('⚠️  Bad MAC error detected — reconnecting to resync session...');
-        setTimeout(startBot, 5000);
-      } else if (willRetry) {
-        console.log(`⚠️  Connection closed [${statusCode}]. Retrying in 5 s...`);
-        setTimeout(startBot, 5000);
-      } else {
-        console.log('Logged out. Delete auth_info/ and restart.');
+      if (isLoggedOut) {
+        console.log('🔓 Logged out. Delete auth_info/ and restart to re-link.');
         process.exit(0);
       }
+
+      if (isConflict) {
+        // Another instance connected — wait longer before retrying
+        console.warn('⚠️  Connection replaced by another device/instance — waiting 30 s...');
+        setTimeout(startBot, 30_000);
+        return;
+      }
+
+      const delay = isBadMac ? 5000 : nextRetryDelay();
+      if (isBadMac) {
+        console.warn(`⚠️  Bad MAC — resync in ${delay / 1000} s...`);
+      } else {
+        console.log(`⚠️  Connection closed [${statusCode}] — retry in ${delay / 1000} s...`);
+      }
+      setTimeout(startBot, delay);
     }
+
     if (connection === 'open') {
       lastActivity = Date.now(); // reset watchdog on connect
+      retryCount   = 0;          // successful connect — reset backoff
+      botStarting  = false;
       console.log(`\n✅ ${BOT_NAME} is LIVE on WhatsApp!`);
-      console.log(`   Commands start with: ${PREFIX}`);
-      console.log(`   Send ${PREFIX}help to any chat to test`);
-      console.log(`   Total features: 15 command groups loaded\n`);
+      console.log(`   Baileys: 6.17.16  |  Commands: ${PREFIX}  |  Debug: ${DEBUG ? 'ON' : 'OFF'}`);
+      console.log(`   Send ${PREFIX}help to any chat to test\n`);
       applyBotCustomization(sock).catch(() => {});
     }
   });
@@ -744,6 +892,7 @@ async function startBot() {
         }
 
         lastActivity = Date.now(); // keep watchdog happy
+        cacheMsg(msg);             // feed message cache for Bad MAC prevention
 
         const fromMe = msg.key.fromMe;
         const sender = fromMe ? (sock.user?.id || jid) : (msg.key.participant || jid);
@@ -776,7 +925,10 @@ async function startBot() {
         }
 
         if (isCmd && cmd) {
+          // Show typing before executing any command
+          await sendTyping(sock, jid);
           await handleCommand(sock, msg, jid, sender, cmd, args, hasImg);
+          await stopTyping(sock, jid);
         } else if (!isCmd && !fromMe) {
           // Decide who replies. The AI chatbot takes priority when it's
           // enabled for this chat type — otherwise static autoreplies were
@@ -787,7 +939,9 @@ async function startBot() {
 
           let handled = false;
           if (chatbotOn) {
-            // 1. Try AI chatbot first (PMs always, groups only when @mentioned/replied)
+            // Auto-typing is handled inside handleChatbot itself; but we also
+            // fire it here so non-chatbot autoreplies also show typing
+            await sendTyping(sock, jid);
             handled = await handleChatbot(sock, msg, body, sock.user?.id || '');
           }
 
@@ -795,7 +949,9 @@ async function startBot() {
             // 2. Fallback to static autoreplies (hi, bye, etc.)
             const reply = findAutoreply(body, BOT_NAME);
             if (reply) {
+              await sendTyping(sock, jid);
               await sock.sendMessage(jid, { text: reply }, { quoted: msg });
+              await stopTyping(sock, jid);
             }
           }
         }
