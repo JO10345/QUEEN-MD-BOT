@@ -1,7 +1,7 @@
 /**
  * YouTube Downloader — uses two Hector Manuel APIs:
  *
- *   Search:   GET https://hector-api.vercel.app/search/youtube?q=<query>
+ *   Search:   GET https://eliteprotech-apis.zone.id/ytsearch?q=<query>
  *   Download: GET https://yt-dl.officialhectormanuel.workers.dev/?url=<yt-url>
  *
  * Response shape (download API):
@@ -24,7 +24,7 @@ const TEMP_DIR  = join(__dirname, '../../temp');
 if (!existsSync(TEMP_DIR)) mkdirSync(TEMP_DIR, { recursive: true });
 
 const DOWNLOAD_API = 'https://yt-dl.officialhectormanuel.workers.dev/';
-const SEARCH_API   = 'https://hector-api.vercel.app/search/youtube';
+const SEARCH_API   = 'https://eliteprotech-apis.zone.id/ytsearch';
 const MAX_BYTES    = 80 * 1024 * 1024; // 80 MB ceiling
 
 const YT_URL_RE = /(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/;
