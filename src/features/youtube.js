@@ -1,17 +1,20 @@
 /**
  * YouTube Feature — search by name OR download by URL.
- * Uses three APIs:
- *   Search (primary):   https://hector-api.vercel.app/search/youtube?q=<query>
- *   Search (fallback):  https://eliteprotech-apis.zone.id/ytsearch?q=<query>
- *   Download (primary): https://yt-dl.officialhectormanuel.workers.dev/?url=<youtube_url>
- *   Download (fallback):https://eliteprotech-apis.zone.id/ytsearch?q=<youtube_url>
  *
- * Quality selection flow:
- *   1. User sends: !yt <url or search query>
- *   2. Bot shows video info + numbered quality list
- *   3. User replies: !ytdl <number>  — to download at chosen quality
+ * APIs (verified response shapes):
+ *   Search primary:  GET https://hector-api.vercel.app/search/youtube?q=
+ *                    → { result: [{ title, channel, duration, imageUrl, link }] }
  *
- * Also supports: !yts <query>  — shows top 5 search results
+ *   Search fallback: GET https://eliteprotech-apis.zone.id/ytsearch?q=
+ *                    → { results: { videos: [{ title, url, thumbnail, duration, views, author }] } }
+ *
+ *   Download:        GET https://yt-dl.officialhectormanuel.workers.dev/?url=
+ *                    → { title, thumbnail, audio, videos: { "144": url, "360": url, ... } }
+ *
+ * Flow:
+ *   1. !yt <url or search>  — shows quality menu
+ *   2. !ytdl <number>       — downloads chosen quality
+ *   3. !yts <query>         — shows top 5 results
  */
 
 import axios from 'axios';
@@ -52,113 +55,98 @@ function formatSize(bytes) {
   return (bytes / 1024 / 1024).toFixed(1) + ' MB';
 }
 
-function mime2ext(mime) {
-  if (!mime) return 'mp4';
-  if (mime.includes('mp4'))  return 'mp4';
-  if (mime.includes('webm')) return 'webm';
-  if (mime.includes('mp3'))  return 'mp3';
-  if (mime.includes('m4a'))  return 'm4a';
-  return 'mp4';
-}
-
-/**
- * Normalise a raw results array from any search API into a consistent shape.
- */
-function extractResults(data) {
-  return (
-    data?.results     ||
-    data?.videos      ||
-    data?.data        ||
-    data?.items       ||
-    (Array.isArray(data) ? data : null)
-  );
-}
-
 /**
  * Search YouTube by query.
- * Tries primary API first, falls back to Elite API on error or empty result.
+ * Primary returns data.result[], fallback returns data.results.videos[].
+ * Returns a unified array: [{ title, url, channel, duration, views, thumbnail }]
  */
 async function searchYouTube(query) {
-  // --- Primary: hector-api ---
+  // --- Primary: hector-api → { result: [...] } ---
   try {
     const { data } = await axios.get(SEARCH_API, {
       params:  { q: query },
       timeout: 20_000,
     });
-    const results = extractResults(data);
-    if (results && results.length > 0) return results;
+    // Primary uses "result" (singular)
+    const arr = Array.isArray(data?.result) ? data.result : null;
+    if (arr && arr.length > 0) {
+      // Normalise to common shape: URL is in "link"
+      return arr.map(r => ({
+        title:     r.title     || '',
+        url:       r.link      || r.url || '',
+        channel:   r.channel   || '',
+        duration:  r.duration  || '',
+        views:     r.views     || '',
+        thumbnail: r.imageUrl  || r.thumbnail || '',
+      }));
+    }
   } catch (err) {
-    console.warn('Primary search API failed, trying fallback:', err.message);
+    console.warn('Primary search failed, trying fallback:', err.message);
   }
 
-  // --- Fallback: eliteprotech ---
+  // --- Fallback: eliteprotech → { results: { videos: [...] } } ---
   try {
     const { data } = await axios.get(ELITE_API, {
       params:  { q: query },
       timeout: 20_000,
     });
-    const results = extractResults(data);
-    if (results && results.length > 0) return results;
+    // Elite uses "results.videos" (nested)
+    const arr = Array.isArray(data?.results?.videos) ? data.results.videos : null;
+    if (arr && arr.length > 0) {
+      return arr.map(r => ({
+        title:     r.title  || '',
+        url:       r.url    || '',
+        channel:   r.author?.name || r.channel || '',
+        duration:  r.duration || '',
+        views:     r.views  || '',
+        thumbnail: r.thumbnail || '',
+      }));
+    }
   } catch (err) {
-    console.warn('Elite search API failed:', err.message);
+    console.warn('Elite search failed:', err.message);
   }
 
-  throw new Error('No search results found from any API.');
+  throw new Error('No search results found. Please try again or use a different query.');
 }
 
 /**
- * Parse qualities out of an Elite API response for a single video.
- * The Elite API is called with the video URL/ID as the query.
+ * Get download info for a YouTube URL.
+ * YTDL API returns: { title, thumbnail, audio, videos: { "144": url, "360": url, ... } }
+ * Returns: { title, thumbnail, qualities[] }
  */
-function parseEliteResponse(data) {
-  const info = data?.data || data?.result || data?.video || data;
-  if (!info) return null;
+async function getDownloadInfo(videoUrl) {
+  const { data } = await axios.get(YTDL_API, {
+    params:  { url: videoUrl },
+    timeout: 35_000,
+  });
 
-  const title     = info.title || info.videoTitle || 'YouTube Video';
-  const thumbnail = info.thumbnail || info.thumbnailUrl || info.image || '';
+  const title     = data?.title || 'YouTube Video';
+  const thumbnail = data?.thumbnail || '';
   let qualities   = [];
 
-  // Formats array
-  if (Array.isArray(info.formats) && info.formats.length > 0) {
-    const seen = new Set();
-    for (const f of info.formats) {
-      const mime    = (f.mimeType || f.type || '').toLowerCase();
-      const hasVid  = f.hasVideo !== false && (f.qualityLabel || f.quality || f.resolution);
-      if (!hasVid) continue;
-      const label   = f.qualityLabel || f.quality || f.resolution || '?';
-      if (seen.has(label)) continue;
-      seen.add(label);
+  // "videos" is an object: { "144": downloadUrl, "360": downloadUrl, ... }
+  if (data?.videos && typeof data.videos === 'object' && !Array.isArray(data.videos)) {
+    const entries = Object.entries(data.videos);
+    // Sort by resolution descending
+    entries.sort((a, b) => (parseInt(b[0]) || 0) - (parseInt(a[0]) || 0));
+    for (const [quality, url] of entries) {
+      if (!url) continue;
       qualities.push({
-        label,
-        url:      f.url || f.downloadUrl,
-        size:     Number(f.contentLength || f.filesize || 0),
-        ext:      mime2ext(mime),
-        hasAudio: f.hasAudio !== false,
+        label:    `${quality}p`,
+        url,
+        size:     0,
+        ext:      'mp4',
+        hasAudio: true,
         hasVideo: true,
       });
     }
-    qualities.sort((a, b) => (parseInt(b.label) || 0) - (parseInt(a.label) || 0));
   }
 
-  // Single video URL fields
-  const directUrl = info.video || info.videoUrl || info.downloadUrl || info.url || info.mp4;
-  if (qualities.length === 0 && directUrl) {
-    qualities.push({
-      label:    info.quality || info.qualityLabel || '360p',
-      url:      directUrl,
-      size:     0,
-      ext:      'mp4',
-      hasAudio: true,
-      hasVideo: true,
-    });
-  }
-
-  // Audio only
-  const audioUrl = info.audio || info.audioUrl || info.mp3;
-  if (audioUrl) {
+  // Audio-only option
+  if (data?.audio) {
     qualities.push({
       label:    'Audio only (MP3)',
-      url:      audioUrl,
+      url:      data.audio,
       size:     0,
       ext:      'mp3',
       hasAudio: true,
@@ -166,110 +154,15 @@ function parseEliteResponse(data) {
     });
   }
 
-  if (qualities.length === 0) return null;
-  return { title, qualities, thumbnail };
-}
-
-/**
- * Get download info for a YouTube URL → returns { title, qualities[], thumbnail }
- * Tries primary YTDL API first, falls back to Elite API.
- */
-async function getDownloadInfo(videoUrl) {
-  // --- Primary: yt-dl worker ---
-  try {
-    const { data } = await axios.get(YTDL_API, {
-      params:  { url: videoUrl },
-      timeout: 35_000,
-    });
-
-    const info  = data?.data || data;
-    const title = info?.title || info?.videoDetails?.title || '';
-    let qualities = [];
-
-    if (Array.isArray(info?.formats) && info.formats.length > 0) {
-      const seen = new Set();
-      const videoFormats = info.formats.filter(f => {
-        const mime   = (f.mimeType || f.type || '').toLowerCase();
-        const hasVid = f.hasVideo !== false && (f.qualityLabel || f.quality);
-        return hasVid && (mime.includes('mp4') || mime.includes('video') || mime.includes('webm'));
-      });
-
-      for (const f of videoFormats) {
-        const label = f.qualityLabel || f.quality || '?';
-        if (seen.has(label)) continue;
-        seen.add(label);
-        qualities.push({
-          label,
-          url:      f.url,
-          size:     Number(f.contentLength || f.filesize || 0),
-          ext:      mime2ext(f.mimeType || f.type || ''),
-          hasAudio: f.hasAudio !== false,
-          hasVideo: true,
-        });
-      }
-      qualities.sort((a, b) => (parseInt(b.label) || 0) - (parseInt(a.label) || 0));
-
-    } else if (info?.video || info?.videoUrl || info?.downloadUrl) {
-      const url = info.video || info.videoUrl || info.downloadUrl;
-      qualities.push({ label: info.quality || '360p', url, size: 0, ext: 'mp4', hasAudio: true, hasVideo: true });
-    }
-
-    if (info?.audio || info?.audioUrl) {
-      qualities.push({
-        label:    'Audio only (MP3)',
-        url:      info.audio || info.audioUrl,
-        size:     0,
-        ext:      'mp3',
-        hasAudio: true,
-        hasVideo: false,
-      });
-    }
-
-    if (qualities.length > 0) {
-      return {
-        title:     title || 'YouTube Video',
-        qualities,
-        thumbnail: info?.thumbnail || info?.thumbnailUrl || '',
-      };
-    }
-    console.warn('Primary YTDL API returned no formats, trying Elite fallback...');
-  } catch (err) {
-    console.warn('Primary YTDL API error, trying Elite fallback:', err.message);
+  if (qualities.length === 0) {
+    throw new Error('No downloadable formats found. The video may be unavailable or age-restricted.');
   }
 
-  // --- Fallback: eliteprotech with video URL as query ---
-  try {
-    const videoId = extractVideoId(videoUrl);
-    const query   = videoId
-      ? `https://www.youtube.com/watch?v=${videoId}`
-      : videoUrl;
-
-    const { data } = await axios.get(ELITE_API, {
-      params:  { q: query },
-      timeout: 35_000,
-    });
-
-    // Elite API may return a list or a single video object
-    const list = extractResults(data);
-    if (list && list.length > 0) {
-      const parsed = parseEliteResponse(list[0]);
-      if (parsed) return parsed;
-    }
-
-    // Try parsing the response directly as a single video
-    const parsed = parseEliteResponse(data);
-    if (parsed) return parsed;
-
-  } catch (err) {
-    console.warn('Elite download fallback failed:', err.message);
-  }
-
-  throw new Error('Could not fetch download info from any API. Try a different video.');
+  return { title, thumbnail, qualities };
 }
 
 /**
  * Stream a URL to a temp file and return bytes written.
- * Fixed: properly handles the MAX_BYTES cap without hanging.
  */
 async function streamToFile(url, dest) {
   const res = await axios.get(url, {
@@ -289,12 +182,11 @@ async function streamToFile(url, dest) {
       if (!tooLarge && bytes > MAX_BYTES) {
         tooLarge = true;
         res.data.destroy();
-        writer.destroy(new Error(`File too large (>${formatSize(MAX_BYTES)}). Try a lower quality.`));
+        writer.destroy(new Error(`File too large (limit 50 MB). Please try a lower quality.`));
       }
     });
 
     res.data.pipe(writer);
-
     writer.on('finish', () => resolve(bytes));
     writer.on('error',  reject);
     res.data.on('error', reject);
@@ -305,41 +197,38 @@ async function streamToFile(url, dest) {
 
 /**
  * !yt <url or search query>
- * Shows video info and quality options.
  */
 export async function handleYouTube(sock, msg, query) {
   const jid = msg.key.remoteJid;
 
   if (!query || query.trim().length < 2) {
     await sock.sendMessage(jid, {
-      text: `❌ *Usage:*\n• *!yt <YouTube link>* — get quality options\n• *!yt <search query>* — search and get options\n• *!yts <query>* — show search results\n• *!ytdl <number>* — download chosen quality`,
+      text: `❌ *Usage:*\n• *!yt <YouTube link>* — get quality options\n• *!yt <search query>* — search and get options\n• *!yts <query>* — show top 5 results\n• *!ytdl <number>* — download chosen quality`,
     }, { quoted: msg });
     return;
   }
 
   try {
-    await sock.sendMessage(jid, { text: `🔍 *Fetching info...*` });
-
     let videoUrl;
     let searchTitle = '';
 
     if (isYoutubeUrl(query)) {
       videoUrl = normalizeUrl(query);
+      await sock.sendMessage(jid, { text: `🔍 *Fetching video info...*` });
     } else {
       await sock.sendMessage(jid, { text: `🔎 *Searching YouTube for:* _${query}_` });
       const results = await searchYouTube(query);
       const top     = results[0];
 
-      videoUrl    = top.url || top.link || top.videoUrl || top.href || top.watchUrl || '';
-      searchTitle = top.title || top.name || '';
-      const dur   = top.duration || top.length || '';
-      const views = top.views    || top.viewCount || '';
+      videoUrl    = top.url;
+      searchTitle = top.title;
 
-      if (!videoUrl) throw new Error('Could not extract video URL from search result.');
+      if (!videoUrl) throw new Error('Could not get a video URL from search results.');
 
       let infoLine = `🎬 Found: *${searchTitle}*`;
-      if (dur)   infoLine += `\n⏱️ ${dur}`;
-      if (views) infoLine += `  ·  👁️ ${Number(views).toLocaleString()} views`;
+      if (top.duration) infoLine += `\n⏱️ ${top.duration}`;
+      if (top.views)    infoLine += `  ·  👁️ ${Number(top.views).toLocaleString()} views`;
+      if (top.channel)  infoLine += `\n👤 ${top.channel}`;
       await sock.sendMessage(jid, { text: infoLine + `\n\n_Getting quality options..._` });
     }
 
@@ -351,15 +240,12 @@ export async function handleYouTube(sock, msg, query) {
     let menu = `🎬 *${finalTitle}*\n`;
     menu += `━━━━━━━━━━━━━━━━━━━━\n`;
     menu += `📥 *Choose quality to download:*\n\n`;
-
     qualities.forEach((q, i) => {
       const icon = q.hasVideo ? '📹' : '🎵';
       const sz   = q.size > 0 ? ` (${formatSize(q.size)})` : '';
       menu += `  *${i + 1}.* ${icon} ${q.label}${sz}\n`;
     });
-
-    menu += `\n_Reply:_ *!ytdl <number>*\n`;
-    menu += `_e.g. !ytdl 1 to download option 1_`;
+    menu += `\n_Reply:_ *!ytdl <number>*  (e.g. !ytdl 1)`;
 
     if (thumbnail) {
       try {
@@ -369,7 +255,7 @@ export async function handleYouTube(sock, msg, query) {
           caption: menu,
         }, { quoted: msg });
         return;
-      } catch { /* fall through to text */ }
+      } catch { /* fall through */ }
     }
 
     await sock.sendMessage(jid, { text: menu }, { quoted: msg });
@@ -377,14 +263,13 @@ export async function handleYouTube(sock, msg, query) {
   } catch (err) {
     console.error('YouTube info error:', err.message);
     await sock.sendMessage(jid, {
-      text: `❌ Couldn't fetch video info.\n_${err.message}_\n\nTip: check the URL is valid or try a different search.`,
+      text: `❌ *Couldn't fetch video info.*\n_${err.message}_\n\nTip: check the URL is valid or try a different search.`,
     }, { quoted: msg });
   }
 }
 
 /**
  * !ytdl <number>
- * Downloads the quality the user picked.
  */
 export async function handleYtDl(sock, msg, args) {
   const jid = msg.key.remoteJid;
@@ -420,12 +305,12 @@ export async function handleYtDl(sock, msg, args) {
       return;
     }
 
-    const ext  = chosen.ext || (chosen.hasVideo ? 'mp4' : 'mp3');
-    tempPath   = join(TEMP_DIR, `yt_${Date.now()}.${ext}`);
+    const ext   = chosen.ext || (chosen.hasVideo ? 'mp4' : 'mp3');
+    tempPath    = join(TEMP_DIR, `yt_${Date.now()}.${ext}`);
     const bytes = await streamToFile(chosen.url, tempPath);
 
     if (!existsSync(tempPath) || statSync(tempPath).size === 0) {
-      throw new Error('Download finished empty. The direct link may have expired — run !yt again.');
+      throw new Error('Download finished empty. Try running !yt again — the link may have expired.');
     }
 
     const sizeMb = (bytes / 1024 / 1024).toFixed(1);
@@ -442,9 +327,7 @@ export async function handleYtDl(sock, msg, args) {
         mimetype: 'audio/mpeg',
         ptt:      false,
       }, { quoted: msg });
-      await sock.sendMessage(jid, {
-        text: `🎵 *${state.title}*\n📦 ${sizeMb} MB`,
-      });
+      await sock.sendMessage(jid, { text: `🎵 *${state.title}*\n📦 ${sizeMb} MB` });
     }
 
     pending.delete(jid);
@@ -452,7 +335,7 @@ export async function handleYtDl(sock, msg, args) {
   } catch (err) {
     console.error('YouTube download error:', err.message);
     await sock.sendMessage(jid, {
-      text: `❌ Download failed.\n_${err.message}_\n\nTry a different quality or run *!yt* again.`,
+      text: `❌ *Download failed.*\n_${err.message}_\n\nTry a different quality or run *!yt* again.`,
     }, { quoted: msg });
   } finally {
     if (tempPath && existsSync(tempPath)) {
@@ -463,7 +346,7 @@ export async function handleYtDl(sock, msg, args) {
 
 /**
  * !yts <query>
- * Shows top 5 search results so user can pick one then use !yt <url>.
+ * Shows top 5 search results.
  */
 export async function handleYtSearch(sock, msg, query) {
   const jid = msg.key.remoteJid;
@@ -483,18 +366,12 @@ export async function handleYtSearch(sock, msg, query) {
     let out = `🎬 *YouTube Search:* _${query}_\n━━━━━━━━━━━━━━━━━━━━\n\n`;
 
     top5.forEach((r, i) => {
-      const title   = r.title    || r.name        || '(no title)';
-      const dur     = r.duration || r.length       || '';
-      const views   = r.views    || r.viewCount    || '';
-      const channel = r.channel  || r.author       || r.channelName || '';
-      const url     = r.url      || r.link         || r.videoUrl    || r.watchUrl || '';
-
-      out += `*${i + 1}.* 🎥 *${title}*\n`;
-      if (channel) out += `   👤 ${channel}\n`;
-      if (dur)     out += `   ⏱️ ${dur}`;
-      if (views)   out += `  ·  👁️ ${Number(views || 0).toLocaleString()} views`;
-      if (dur || views) out += '\n';
-      if (url)     out += `   🔗 ${url}\n`;
+      out += `*${i + 1}.* 🎥 *${r.title || '(no title)'}*\n`;
+      if (r.channel)  out += `   👤 ${r.channel}\n`;
+      if (r.duration) out += `   ⏱️ ${r.duration}`;
+      if (r.views)    out += `  ·  👁️ ${Number(r.views || 0).toLocaleString()} views`;
+      if (r.duration || r.views) out += '\n';
+      if (r.url)      out += `   🔗 ${r.url}\n`;
       out += '\n';
     });
 
@@ -504,7 +381,7 @@ export async function handleYtSearch(sock, msg, query) {
   } catch (err) {
     console.error('YT search error:', err.message);
     await sock.sendMessage(jid, {
-      text: `❌ Search failed.\n_${err.message}_`,
+      text: `❌ *Search failed.*\n_${err.message}_`,
     }, { quoted: msg });
   }
 }
