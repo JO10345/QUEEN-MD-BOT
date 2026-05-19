@@ -92,6 +92,11 @@ import {
   handleEndQuiz,
 } from './features/quiz.js';
 
+// ── NEW FEATURE IMPORTS ───────────────────────────────────────────────────────
+import { handleFbDl }                       from './features/facebook.js';
+import { handleAllInOne }                   from './features/allin.js';
+import { handleAdultDl, handleAdultVerify } from './features/adult.js';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const PREFIX       = process.env.PREFIX       || '!';
@@ -119,6 +124,10 @@ const FEATURES = {
   quiz:      process.env.QUIZ_ENABLED      !== 'false',
   image:     process.env.IMAGE_ENABLED     !== 'false',
   cute:      process.env.CUTE_ENABLED      !== 'false',
+  // ── New features ──
+  fbdl:      process.env.FBDL_ENABLED      !== 'false',
+  allin:     process.env.ALLIN_ENABLED     !== 'false',
+  adult:     process.env.ADULT_ENABLED     !== 'false',
 };
 
 const AUTH_DIR = join(__dirname, '../auth_info');
@@ -218,9 +227,24 @@ function buildHelpText() {
   if (FEATURES.music)     lines.push(`\n🎵 *Music*\n  › ${P}music <song>  ·  ${P}mp3 <song>`);
   if (FEATURES.youtube)   lines.push(
     `\n📹 *YouTube*\n` +
-    `  › ${P}yt <link or search>    — show quality options\n` +
-    `  › ${P}ytdl <number>          — download chosen quality\n` +
+    `  › ${P}yt <link or search>    — show download options\n` +
+    `  › ${P}ytdl 1                 — download as Video (MP4)\n` +
+    `  › ${P}ytdl 2                 — download as Audio (MP3)\n` +
     `  › ${P}yts <query>            — search & show results`
+  );
+  if (FEATURES.fbdl)      lines.push(
+    `\n📘 *Facebook Downloader*\n` +
+    `  › ${P}fbdl <facebook link>   — get HD/SD options\n` +
+    `  › ${P}fbdl 1                 — download HD\n` +
+    `  › ${P}fbdl 2                 — download SD`
+  );
+  if (FEATURES.allin)     lines.push(
+    `\n📲 *All-in-One Downloader*\n` +
+    `  › ${P}dl <link>              — TikTok, Instagram, Twitter & more`
+  );
+  if (FEATURES.adult)     lines.push(
+    `\n🔞 *Adult (18+ only)*\n` +
+    `  › ${P}xvdl <xvideos link>    — age verification then download`
   );
   if (FEATURES.weather)   lines.push(`\n🌤️ *Weather*\n  › ${P}weather <city>  ·  ${P}w <city>`);
   if (FEATURES.ai)        lines.push(`\n🤖 *AI Chat*\n  › ${P}ai <question>  ·  ${P}ask  ·  ${P}chat\n  › ${P}clear — reset memory`);
@@ -229,7 +253,7 @@ function buildHelpText() {
   if (FEATURES.translate) lines.push(`\n🌐 *Translate*\n  › ${P}translate <lang> <text>\n  _e.g. ${P}translate es Hello_`);
   if (FEATURES.group)     lines.push(`\n👥 *Group (admin)*\n  › ${P}kick · ${P}add · ${P}promote · ${P}demote\n  › ${P}tagall · ${P}mute · ${P}unmute · ${P}groupinfo`);
   if (FEATURES.reminder)  lines.push(`\n⏰ *Reminder*\n  › ${P}remind <time> <text>\n  _e.g. ${P}remind 10m Check oven_`);
-  if (FEATURES.imagine)   lines.push(`\n🎨 *AI Image*\n  › ${P}imagine <description>`);
+  if (FEATURES.imagine)   lines.push(`\n🎨 *AI Image*\n  › ${P}imagine <description>  ·  ${P}gen <description>`);
   if (FEATURES.calc)      lines.push(`\n🧮 *Calculator*\n  › ${P}calc <expression>\n  _e.g. ${P}calc 15% of 200_`);
   if (FEATURES.currency)  lines.push(`\n💱 *Currency*\n  › ${P}convert <amount> <from> <to>\n  _e.g. ${P}convert 100 USD NGN_`);
   if (FEATURES.news)      lines.push(`\n📰 *News*\n  › ${P}news [country/topic]\n  _e.g. ${P}news ng  ·  ${P}news bitcoin_`);
@@ -311,7 +335,7 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
       return;
   }
 
-  // ── Music ─────────────────────────────────────────────────────────────────
+  // ── Music ──────────────────────────────────────────────────────────────────
   if (cmd === 'music' || cmd === 'mp3') {
     if (!FEATURES.music) { await sock.sendMessage(jid, { text: '❌ Music feature is disabled.' }); return; }
     if (!args)           { await sock.sendMessage(jid, { text: `Usage: *${PREFIX}music <song name>*` }); return; }
@@ -319,7 +343,7 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
-  // ── YouTube ───────────────────────────────────────────────────────────────
+  // ── YouTube ────────────────────────────────────────────────────────────────
   if (cmd === 'yt' || cmd === 'youtube') {
     if (!FEATURES.youtube) { await sock.sendMessage(jid, { text: '❌ YouTube feature is disabled.' }); return; }
     if (!args)             { await sock.sendMessage(jid, { text: `Usage: *${PREFIX}yt <URL or search query>*` }); return; }
@@ -327,14 +351,12 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
-  // Download chosen quality (after !yt shows the list)
   if (cmd === 'ytdl' || cmd === 'ytdownload') {
     if (!FEATURES.youtube) { await sock.sendMessage(jid, { text: '❌ YouTube feature is disabled.' }); return; }
     await handleYtDl(sock, msg, args);
     return;
   }
 
-  // Search-only command
   if (cmd === 'yts' || cmd === 'ytsearch') {
     if (!FEATURES.youtube) { await sock.sendMessage(jid, { text: '❌ YouTube feature is disabled.' }); return; }
     if (!args)             { await sock.sendMessage(jid, { text: `Usage: *${PREFIX}yts <search query>*` }); return; }
@@ -342,7 +364,28 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
-  // ── Weather ───────────────────────────────────────────────────────────────
+  // ── Facebook Downloader ───────────────────────────────────────────────────
+  if (cmd === 'fbdl' || cmd === 'fb' || cmd === 'facebook') {
+    if (!FEATURES.fbdl) { await sock.sendMessage(jid, { text: '❌ Facebook downloader is disabled.' }); return; }
+    await handleFbDl(sock, msg, args);
+    return;
+  }
+
+  // ── All-in-One Downloader ─────────────────────────────────────────────────
+  if (cmd === 'dl' || cmd === 'download' || cmd === 'vid') {
+    if (!FEATURES.allin) { await sock.sendMessage(jid, { text: '❌ All-in-one downloader is disabled.' }); return; }
+    await handleAllInOne(sock, msg, args);
+    return;
+  }
+
+  // ── Adult (18+) ───────────────────────────────────────────────────────────
+  if (cmd === 'xvdl' || cmd === 'xv') {
+    if (!FEATURES.adult) { await sock.sendMessage(jid, { text: '❌ Adult downloader is disabled.' }); return; }
+    await handleAdultDl(sock, msg, args);
+    return;
+  }
+
+  // ── Weather ────────────────────────────────────────────────────────────────
   if (cmd === 'weather' || cmd === 'w') {
     if (!FEATURES.weather) { await sock.sendMessage(jid, { text: '❌ Weather feature is disabled.' }); return; }
     if (!args)             { await sock.sendMessage(jid, { text: `Usage: *${PREFIX}weather <city>*` }); return; }
@@ -350,7 +393,7 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
-  // ── AI Chat ───────────────────────────────────────────────────────────────
+  // ── AI Chat ────────────────────────────────────────────────────────────────
   if (cmd === 'ai' || cmd === 'ask' || cmd === 'chat') {
     if (!FEATURES.ai) { await sock.sendMessage(jid, { text: '❌ AI feature is disabled.' }); return; }
     if (!args)        { await sock.sendMessage(jid, { text: `Usage: *${PREFIX}ai <your question>*` }); return; }
@@ -358,14 +401,14 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
-  // ── Sticker ───────────────────────────────────────────────────────────────
+  // ── Sticker ────────────────────────────────────────────────────────────────
   if (cmd === 'sticker' || cmd === 's') {
     if (!FEATURES.sticker) { await sock.sendMessage(jid, { text: '❌ Sticker feature is disabled.' }); return; }
     await handleSticker(sock, msg);
     return;
   }
 
-  // ── Translate ─────────────────────────────────────────────────────────────
+  // ── Translate ──────────────────────────────────────────────────────────────
   if (cmd === 'translate' || cmd === 'tr') {
     if (!FEATURES.translate) { await sock.sendMessage(jid, { text: '❌ Translate feature is disabled.' }); return; }
     if (!args)               { await sock.sendMessage(jid, { text: `Usage: *${PREFIX}translate <lang> <text>*\nExample: *${PREFIX}translate es Hello*` }); return; }
@@ -373,14 +416,14 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
-  // ── Group Management ──────────────────────────────────────────────────────
+  // ── Group Management ───────────────────────────────────────────────────────
   if (['kick','add','promote','demote','tagall','groupinfo','mute','unmute'].includes(cmd)) {
     if (!FEATURES.group) { await sock.sendMessage(jid, { text: '❌ Group feature is disabled.' }); return; }
     await handleGroup(sock, msg, cmd, args, OWNER_NUMBER);
     return;
   }
 
-  // ── Reminder ──────────────────────────────────────────────────────────────
+  // ── Reminder ───────────────────────────────────────────────────────────────
   if (cmd === 'remind' || cmd === 'reminder') {
     if (!FEATURES.reminder) { await sock.sendMessage(jid, { text: '❌ Reminder feature is disabled.' }); return; }
     if (!args)              { await sock.sendMessage(jid, { text: `Usage: *${PREFIX}remind <time> <message>*\nExample: *${PREFIX}remind 10m Check oven*` }); return; }
@@ -388,21 +431,21 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
-  // ── AI Image Generation ───────────────────────────────────────────────────
+  // ── AI Image Generation ────────────────────────────────────────────────────
   if (cmd === 'imagine' || cmd === 'image' || cmd === 'gen') {
     if (!FEATURES.imagine) { await sock.sendMessage(jid, { text: '❌ Image generation is disabled.' }); return; }
     await handleImagine(sock, msg, args);
     return;
   }
 
-  // ── Calculator ────────────────────────────────────────────────────────────
+  // ── Calculator ─────────────────────────────────────────────────────────────
   if (cmd === 'calc' || cmd === 'calculate' || cmd === 'math') {
     if (!FEATURES.calc) { await sock.sendMessage(jid, { text: '❌ Calculator is disabled.' }); return; }
     await handleCalculator(sock, msg, args);
     return;
   }
 
-  // ── Currency Converter ────────────────────────────────────────────────────
+  // ── Currency Converter ─────────────────────────────────────────────────────
   if (cmd === 'convert' || cmd === 'currency' || cmd === 'fx') {
     if (!FEATURES.currency) { await sock.sendMessage(jid, { text: '❌ Currency converter is disabled.' }); return; }
     if (!args)              { await sock.sendMessage(jid, { text: `Usage: *${PREFIX}convert 100 USD NGN*` }); return; }
@@ -410,35 +453,35 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
-  // ── News ──────────────────────────────────────────────────────────────────
+  // ── News ───────────────────────────────────────────────────────────────────
   if (cmd === 'news' || cmd === 'headlines') {
     if (!FEATURES.news) { await sock.sendMessage(jid, { text: '❌ News feature is disabled.' }); return; }
     await handleNews(sock, msg, args);
     return;
   }
 
-  // ── Quotes ────────────────────────────────────────────────────────────────
+  // ── Quotes ─────────────────────────────────────────────────────────────────
   if (cmd === 'quote' || cmd === 'q') {
     if (!FEATURES.fun) { await sock.sendMessage(jid, { text: '❌ Fun features are disabled.' }); return; }
     await handleQuote(sock, msg);
     return;
   }
 
-  // ── Jokes ─────────────────────────────────────────────────────────────────
+  // ── Jokes ──────────────────────────────────────────────────────────────────
   if (cmd === 'joke' || cmd === 'j') {
     if (!FEATURES.fun) { await sock.sendMessage(jid, { text: '❌ Fun features are disabled.' }); return; }
     await handleJoke(sock, msg);
     return;
   }
 
-  // ── Image Search ─────────────────────────────────────────────────────────
+  // ── Image Search ───────────────────────────────────────────────────────────
   if (cmd === 'img' || cmd === 'gimg' || cmd === 'gimage' || cmd === 'imgsearch') {
     if (!FEATURES.image) { await sock.sendMessage(jid, { text: '❌ Image search is disabled.' }); return; }
     await handleImage(sock, msg, args);
     return;
   }
 
-  // ── Cute & Games ─────────────────────────────────────────────────────────
+  // ── Cute & Games ───────────────────────────────────────────────────────────
   if (FEATURES.cute) {
     if (cmd === 'ship' || cmd === 'love')          { await handleShip(sock, msg, args);       return; }
     if (cmd === 'fact' || cmd === 'didyouknow')    { await handleFact(sock, msg);             return; }
@@ -451,7 +494,7 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     if (cmd === 'hug')                              { await handleHug(sock, msg, args);        return; }
   }
 
-  // ── Poll System ───────────────────────────────────────────────────────────
+  // ── Poll System ────────────────────────────────────────────────────────────
   if (cmd === 'poll') {
     if (!FEATURES.poll) { await sock.sendMessage(jid, { text: '❌ Poll feature is disabled.' }); return; }
     await handlePoll(sock, msg, args);
@@ -473,7 +516,7 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
-  // ── Quiz ──────────────────────────────────────────────────────────────────
+  // ── Quiz ───────────────────────────────────────────────────────────────────
   if (cmd === 'quiz') {
     if (!FEATURES.quiz) { await sock.sendMessage(jid, { text: '❌ Quiz feature is disabled.' }); return; }
     await handleQuiz(sock, msg, args);
@@ -500,7 +543,7 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
-  // ── Auto-React ────────────────────────────────────────────────────────────
+  // ── Auto-React ─────────────────────────────────────────────────────────────
   if (cmd === 'autoreact') {
     if (!owner) { await sock.sendMessage(jid, { text: '❌ Owner only.' }); return; }
     const parts = (args || '').toLowerCase().trim().split(/\s+/).filter(Boolean);
@@ -526,7 +569,7 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
-  // ── Chatbot (AI auto-reply) ──────────────────────────────────────────────
+  // ── Chatbot (AI auto-reply) ────────────────────────────────────────────────
   if (cmd === 'chatbot') {
     if (!owner) { await sock.sendMessage(jid, { text: '❌ Owner only.' }); return; }
     const parts = (args || '').toLowerCase().trim().split(/\s+/).filter(Boolean);
@@ -559,7 +602,7 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
-  // ── Auto-Typing ───────────────────────────────────────────────────────────
+  // ── Auto-Typing ────────────────────────────────────────────────────────────
   if (cmd === 'autotyping' || cmd === 'autotype') {
     if (!owner) { await sock.sendMessage(jid, { text: '❌ Owner only.' }); return; }
     const parts = (args || '').toLowerCase().trim().split(/\s+/).filter(Boolean);
@@ -586,27 +629,27 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
-  // ── Antilink ──────────────────────────────────────────────────────────────
+  // ── Antilink ───────────────────────────────────────────────────────────────
   if (cmd === 'antilink' || cmd === 'nolink') {
     await handleAntilinkCommand(sock, msg, args, OWNER_NUMBER);
     return;
   }
 
-  // ── Auto Status View ──────────────────────────────────────────────────────
+  // ── Auto Status View ───────────────────────────────────────────────────────
   if (cmd === 'autostatus') {
     if (!owner) { await sock.sendMessage(jid, { text: '❌ Owner only.' }); return; }
     await handleAutoStatusCommand(sock, msg, args);
     return;
   }
 
-  // ── Update from GitHub ────────────────────────────────────────────────────
+  // ── Update from GitHub ─────────────────────────────────────────────────────
   if (cmd === 'update' || cmd === 'upgrade') {
     if (!owner) { await sock.sendMessage(jid, { text: '❌ Owner only.' }); return; }
     await handleUpdate(sock, msg);
     return;
   }
 
-  // ── Owner: set profile picture ────────────────────────────────────────────
+  // ── Owner: set profile picture ─────────────────────────────────────────────
   if (cmd === 'setppbot') {
     if (!owner) { await sock.sendMessage(jid, { text: '❌ Owner only.' }); return; }
     let ok = false;
@@ -624,7 +667,7 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
     return;
   }
 
-  // ── Owner: set bio ────────────────────────────────────────────────────────
+  // ── Owner: set bio ─────────────────────────────────────────────────────────
   if (cmd === 'setbio') {
     if (!owner) { await sock.sendMessage(jid, { text: '❌ Owner only.' }); return; }
     if (!args)  { await sock.sendMessage(jid, { text: `Usage: *${PREFIX}setbio <text>*` }); return; }
@@ -640,7 +683,7 @@ async function handleCommand(sock, msg, jid, sender, cmd, args, hasImg) {
   // Unknown — ignore silently
 }
 
-// ─── Main bot ─────────────────────────────────────────────────────────────────
+// ─── Main bot ──────────────────────────────────────────────────────────────────
 async function startBot() {
   const phone = await resolvePhoneNumber();
 
@@ -790,6 +833,13 @@ async function startBot() {
           await handleAutoReact(sock, msg);
         }
 
+        // ── 18+ verification intercept ─────────────────────────────────────
+        // Must run BEFORE command parsing so "yes" replies are caught
+        if (!fromMe && FEATURES.adult) {
+          const consumed = await handleAdultVerify(sock, msg).catch(() => false);
+          if (consumed) continue;
+        }
+
         const body = getBody(msg);
         if (!body) continue;
 
@@ -840,7 +890,7 @@ async function startBot() {
   });
 }
 
-// ─── Startup banner ───────────────────────────────────────────────────────────
+// ─── Startup banner ────────────────────────────────────────────────────────────
 console.log('\n╔══════════════════════════════════════╗');
 console.log(`║  👑  ${BOT_NAME}`.padEnd(39) + '║');
 console.log(`║  Prefix: ${PREFIX}  |  Debug: ${DEBUG ? 'ON' : 'OFF'}`.padEnd(39) + '║');
