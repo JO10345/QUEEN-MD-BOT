@@ -1,19 +1,21 @@
 {
   "name": "queen-md-bot",
-  "version": "2.1.0",
-  "description": "Queen MD Bot — WhatsApp Multi-Device Bot",
+  "version": "3.1.0",
+  "description": "Queen MD Bot — Multi-Device WhatsApp Bot with Telegram Pairing",
   "type": "module",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
   },
   "dependencies": {
     "@distube/ytdl-core": "^4.16.6",
     "@hapi/boom": "^10.0.1",
-    "@whiskeysockets/baileys": "^6.7.16",
+    "@crysnovax/baileys": "latest",
     "axios": "^1.7.9",
     "dotenv": "^16.4.5",
     "he": "^1.2.0",
     "mathjs": "^13.2.3",
+    "node-telegram-bot-api": "^0.66.0",
     "openai": "^4.77.0",
     "pino": "^9.5.0",
     "qrcode-terminal": "^0.12.0",
