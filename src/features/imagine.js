@@ -13,6 +13,7 @@
  *
  * Usage:
  *   !imagine <description>
+ *   !imgine <description> — force Pollinations Flux
  *   !gen <description>
  *
  * Switch provider via .env:
@@ -26,7 +27,7 @@ import axios from 'axios';
 const ZONERAI_URL       = 'https://eliteprotech-apis.zone.id/zonerai';
 const POLLINATIONS_BASE = 'https://image.pollinations.ai/prompt';
 
-export async function handleImagine(sock, msg, prompt) {
+export async function handleImagine(sock, msg, prompt, providerOverride = '') {
   const jid = msg.key.remoteJid;
 
   if (!prompt || prompt.trim().length < 3) {
@@ -42,7 +43,7 @@ export async function handleImagine(sock, msg, prompt) {
     return;
   }
 
-  const provider = (process.env.IMAGINE_PROVIDER || 'zonerai').toLowerCase();
+  const provider = (providerOverride || process.env.IMAGINE_PROVIDER || 'zonerai').toLowerCase();
   const cleanPrompt = prompt.trim();
 
   try {

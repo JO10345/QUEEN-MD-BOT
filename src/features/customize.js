@@ -1,17 +1,21 @@
 import axios from 'axios';
 
-// ─── Get the bot's own JID (strip device suffix like :5@s.whatsapp.net) ───────
+// ─── Get the bot's own JID without changing PN/LID addressing ────────────────
 function getBotJid(sock) {
-  const raw = sock.user?.id || '';
-  // raw looks like "2348012345678:5@s.whatsapp.net" — we need "2348012345678@s.whatsapp.net"
-  const number = raw.split(':')[0].split('@')[0];
-  return `${number}@s.whatsapp.net`;
+  const raw = sock.user?.id || sock.user?.lid || sock.user?.phoneNumber || '';
+  if (!raw) return '';
+  const at = raw.lastIndexOf('@');
+  return at >= 0
+    ? `${raw.slice(0, at).split(':')[0]}${raw.slice(at)}`
+    : raw.split(':')[0];
 }
 
 // ─── Apply all customizations on startup ─────────────────────────────────────
+// Profile picture is intentionally NOT updated automatically on every connect.
+// Auto-updating profile pics annoys users and can trigger WA anti-bot checks.
+// Use !setppbot in chat to change the profile picture manually if needed.
 export async function applyBotCustomization(sock) {
-  const botBio      = process.env.BOT_BIO      || '👑 Queen MD Bot | !help for commands';
-  const botImageUrl = process.env.BOT_IMAGE_URL || '';
+  const botBio = process.env.BOT_BIO || '👑 Queen MD Bot | !help for commands';
 
   await new Promise(r => setTimeout(r, 3000));
 
@@ -20,12 +24,6 @@ export async function applyBotCustomization(sock) {
     console.log(`✅ Bot bio set: "${botBio}"`);
   } catch (err) {
     console.error('⚠️  Could not set bot bio:', err.message);
-  }
-
-  if (botImageUrl) {
-    await setBotImage(sock, botImageUrl);
-  } else {
-    console.log('ℹ️  BOT_IMAGE_URL not set — skipping profile picture.');
   }
 }
 

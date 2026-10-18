@@ -14,8 +14,8 @@
 
 import { getState, setState } from './state.js';
 
-let pmEnabled    = getState('autotyping_pm',    process.env.AUTOTYPING_PM_ENABLED    !== 'false');
-let groupEnabled = getState('autotyping_group', process.env.AUTOTYPING_GROUP_ENABLED !== 'false');
+let pmEnabled    = getState('autotyping_pm',    process.env.AUTOTYPING_PM_ENABLED    === 'true');
+let groupEnabled = getState('autotyping_group', process.env.AUTOTYPING_GROUP_ENABLED === 'true');
 
 const TYPING_DURATION = parseInt(process.env.AUTOTYPING_DURATION_MS || '3000');
 
@@ -45,7 +45,8 @@ export function handleAutoTyping(sock, msg) {
     if (!jid) return;
 
     const isGroup = jid.endsWith('@g.us');
-    const isPm    = jid.endsWith('@s.whatsapp.net');
+    const isPm    = jid.endsWith('@s.whatsapp.net') ||
+      jid.endsWith('@c.us') || jid.endsWith('@lid');
 
     if (isGroup && !groupEnabled) return;
     if (isPm    && !pmEnabled)    return;

@@ -1,150 +1,236 @@
 /**
  * Facebook Video Downloader
  *
- * API: https://api.botcahx.eu.org/api/dowloader/fbdown2?url=&apikey=GMauog6R
+ * Uses Botcahx first when BOTCAHX_API_KEY is configured, then GTech and
+ * David Cyril fallbacks. Provider response formats are normalized below.
  *
- * Response: { status, result: { status, url: { title, isHdAvailable, urls: [{ hd, sd }] } } }
+ * Response: { success: true, source, total, results: [{ quality, url }] }
  *
  * Commands:
- *   !fbdl <facebook link>  — fetch HD/SD options
- *   !fbdl 1               — download HD
- *   !fbdl 2               — download SD
+ *   !fbdl <facebook link>  — fetch quality options
+ *   !fbdl 1,2,3...         — download selected quality
  */
 
 import axios from 'axios';
 
-const BOTCAHX_KEY = 'GMauog6R';
-const FB_API      = 'https://api.botcahx.eu.org/api/dowloader/fbdown2';
+const FB_URL_RE = /facebook\.com\/(watch|video|reel|share)|fb\.watch/i;
+const FB_APIS = [
+  {
+    name: 'botcahx',
+    url: 'https://api.botcahx.eu.org/api/dowloader/fbdown',
+    enabled: Boolean(process.env.BOTCAHX_API_KEY),
+    params: url => ({ url, apikey: process.env.BOTCAHX_API_KEY }),
+  },
+  {
+    name: 'gtech',
+    url: 'https://gtech-api-xtp1.onrender.com/api/download/fb',
+    enabled: true,
+    params: url => ({ url, apikey: process.env.GTECH_FB_API_KEY || 'APIKEY' }),
+  },
+  {
+    name: 'davidcyril',
+    url: 'https://apis.davidcyriltech.my.id/facebook3',
+    enabled: true,
+    params: url => ({ url }),
+  },
+];
 
-const FB_URL_RE = /facebook\.com\/(watch|video|reel|share\/v)|fb\.watch/i;
-
-// Per-chat pending: jid → { hd, sd, title }
+// Per-chat pending: jid → { title, options: [{ quality, url }] }
 const pending = new Map();
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function isFacebookUrl(url) { return FB_URL_RE.test(url || ''); }
 
-// ── Handler ───────────────────────────────────────────────────────────────────
+function normalizeFacebookResponse(data) {
+  if (data?.success === false || data?.status === false || data?.data?.status === false) {
+    throw new Error(data?.message || data?.error || 'Provider returned an error.');
+  }
+
+  const title =
+    data?.result?.url?.title ||
+    data?.result?.title ||
+    data?.data?.title ||
+    data?.title ||
+    'Facebook Video';
+
+  const resultUrls = data?.result?.url?.urls;
+  if (Array.isArray(resultUrls)) {
+    const options = [];
+    for (const item of resultUrls) {
+      if (item?.hd) options.push({ quality: 'HD', url: item.hd });
+      if (item?.sd) options.push({ quality: 'SD', url: item.sd });
+    }
+    if (options.length) return { title, options };
+  }
+
+  const rawResults =
+    data?.data?.data ||
+    data?.results ||
+    data?.result ||
+    data?.data ||
+    [];
+  const rows = Array.isArray(rawResults)
+    ? rawResults
+    : Object.entries(rawResults || {}).map(([quality, value]) => ({
+      quality,
+      url: typeof value === 'string' ? value : value?.url || value?.download || value?.download_url,
+    }));
+
+  const options = rows.flatMap(item => {
+    if (!item || typeof item !== 'object') return [];
+    const links = [item.url, item.download, item.download_url, item.hd, item.sd].filter(
+      value => typeof value === 'string' && /^https?:\/\//i.test(value),
+    );
+    return links.map((url, index) => ({
+      quality: item.resolution || item.quality ||
+        (url === item.hd ? 'HD' : url === item.sd ? 'SD' : `Option ${index + 1}`),
+      url,
+    }));
+  });
+
+  if (!options.length) throw new Error('Provider returned no usable download URLs.');
+  return { title, options };
+}
+
+async function fetchFacebookOptions(input) {
+  let lastError;
+  for (const api of FB_APIS) {
+    if (!api.enabled) continue;
+    try {
+      const { data } = await axios.get(api.url, {
+        params: api.params(input),
+        timeout: 35_000,
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+      });
+      const normalized = normalizeFacebookResponse(data);
+      console.log(`[FB] Using ${api.name} provider (${normalized.options.length} options)`);
+      return normalized;
+    } catch (error) {
+      console.warn(`[FB] ${api.name} provider failed: ${error.message}`);
+      lastError = error;
+    }
+  }
+  throw lastError || new Error('No Facebook download provider is enabled.');
+}
 
 export async function handleFbDl(sock, msg, args) {
   const jid   = msg.key.remoteJid;
   const input = (args || '').trim();
 
-  // ── Quality selection ──
-  if (input === '1' || input === '2') {
+  // ── Quality selection (number input) ────────────────────────────────────────
+  const numInput = parseInt(input, 10);
+  if (!isNaN(numInput) && numInput >= 1) {
     const state = pending.get(jid);
     if (!state) {
-      await sock.sendMessage(jid, {
+      return sock.sendMessage(jid, {
         text: `❌ No pending download. Send *!fbdl <facebook link>* first.`,
       }, { quoted: msg });
-      return;
     }
 
-    const isHD    = input === '1';
-    const dlUrl   = isHD ? state.hd : state.sd;
-    const quality = isHD ? 'HD' : 'SD';
-
-    if (!dlUrl) {
-      await sock.sendMessage(jid, {
-        text: `❌ *${quality}* quality is not available for this video. Try the other option.`,
+    const option = state.options[numInput - 1];
+    if (!option) {
+      return sock.sendMessage(jid, {
+        text: `❌ Invalid option. Choose 1 to ${state.options.length}.`,
       }, { quoted: msg });
-      return;
     }
 
     try {
       await sock.sendMessage(jid, {
-        text: `⬇️ *Downloading Facebook video*\n📺 Quality: *${quality}*\n\n_Please wait..._`,
+        text: `⬇️ *Downloading* — ${option.quality}\n_Please wait..._`,
       });
 
-      const res = await axios.get(dlUrl, {
-        responseType: 'arraybuffer',
-        timeout: 120_000,
-        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.facebook.com/' },
-      });
-
+      let res;
+      let lastDownloadError;
+      for (const downloadUrl of option.urls || [option.url]) {
+        try {
+          res = await axios.get(downloadUrl, {
+            responseType: 'arraybuffer',
+            timeout: 120_000,
+            maxContentLength: 150 * 1024 * 1024,
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              'Referer': 'https://www.facebook.com/',
+            },
+          });
+          const candidate = Buffer.from(res.data);
+          const head = candidate.slice(0, 300).toString('utf8').trimStart().toLowerCase();
+          if (candidate.length < 10_000 || head.startsWith('<html') ||
+              head.startsWith('<!doctype') || head.startsWith('{')) {
+            throw new Error('CDN returned an error page instead of video data.');
+          }
+          break;
+        } catch (error) {
+          lastDownloadError = error;
+          res = null;
+        }
+      }
+      if (!res) throw lastDownloadError || new Error('Every download URL failed.');
       const buf    = Buffer.from(res.data);
       const sizeMb = (buf.length / 1024 / 1024).toFixed(1);
 
       if (buf.length > 50 * 1024 * 1024) {
-        await sock.sendMessage(jid, {
-          text: `⚠️ *File too large* (${sizeMb} MB). WhatsApp limit is 50 MB. Try SD instead.`,
+        return sock.sendMessage(jid, {
+          text: `⚠️ *File too large* (${sizeMb} MB). WhatsApp limit is ~50 MB. Try a lower quality.`,
         }, { quoted: msg });
-        return;
       }
 
       pending.delete(jid);
 
-      await sock.sendMessage(jid, {
-        video:    buf,
-        caption:  `📘 *${state.title}*\n📺 ${quality}  ·  📦 ${sizeMb} MB`,
-        mimetype: 'video/mp4',
-      }, { quoted: msg });
+      const contentType = res.headers['content-type'] || 'video/mp4';
+      const isVideo = contentType.includes('video');
+      const isAudio = contentType.includes('audio');
+
+      if (isVideo || (!isAudio && buf.length > 1024)) {
+        await sock.sendMessage(jid, {
+          video:    buf,
+          caption:  `📘 *${state.title}*\n📺 ${option.quality}  ·  📦 ${sizeMb} MB`,
+          mimetype: 'video/mp4',
+        }, { quoted: msg });
+      } else {
+        await sock.sendMessage(jid, {
+          audio:    buf,
+          mimetype: 'audio/mp4',
+        }, { quoted: msg });
+        await sock.sendMessage(jid, { text: `📘 *${state.title}*\n🎵 ${option.quality}` });
+      }
 
     } catch (err) {
       console.error('[FB] download error:', err.message);
       await sock.sendMessage(jid, {
-        text: `❌ *Download failed.*\n_${err.message}_`,
+        text: `❌ *Download failed.*\n_${err.message}_\n\nTry another quality option.`,
       }, { quoted: msg });
     }
     return;
   }
 
-  // ── New URL ──
+  // ── New URL ──────────────────────────────────────────────────────────────────
   if (!input) {
-    await sock.sendMessage(jid, {
+    return sock.sendMessage(jid, {
       text:
         `❌ *Usage:*\n` +
-        `• *!fbdl <facebook video link>* — get options\n` +
-        `• *!fbdl 1* — HD quality\n` +
-        `• *!fbdl 2* — SD quality\n\n` +
-        `Supported links:\n` +
-        `  facebook.com/watch/...\n` +
-        `  facebook.com/video/...\n` +
-        `  facebook.com/reel/...\n` +
-        `  fb.watch/...`,
+        `• *!fbdl <facebook link>* — fetch options\n` +
+        `• *!fbdl 1* — download first quality\n` +
+        `• *!fbdl 2* — download second quality\n\n` +
+        `Supported: facebook.com/watch · /video · /reel · /share · fb.watch`,
     }, { quoted: msg });
-    return;
   }
 
   if (!isFacebookUrl(input)) {
-    await sock.sendMessage(jid, {
+    return sock.sendMessage(jid, {
       text: `❌ *Invalid URL.* Please send a Facebook video or reel link.`,
     }, { quoted: msg });
-    return;
   }
 
   try {
     await sock.sendMessage(jid, { text: `🔍 *Fetching Facebook video info...*` });
 
-    const { data } = await axios.get(FB_API, {
-      params: { url: input, apikey: BOTCAHX_KEY },
-      timeout: 30_000,
+    const { title, options } = await fetchFacebookOptions(input);
+    pending.set(jid, { title, options });
+
+    let menu = `📘 *${title}*\n━━━━━━━━━━━━━━━━━━━━\n📥 *Choose quality:*\n\n`;
+    options.forEach((r, i) => {
+      menu += `  *${i + 1}.* ${r.quality || `Option ${i + 1}`}\n`;
     });
-
-    if (!data?.status) throw new Error(data?.message || 'API returned an error.');
-    const r = data.result;
-    if (!r || r.status !== 'success') throw new Error(r?.message || 'Could not fetch video info.');
-
-    const urlData = r.url;
-    const urls    = urlData?.urls?.[0] || {};
-
-    const info = {
-      title:     urlData?.title || 'Facebook Video',
-      isHdAvail: urlData?.isHdAvailable || false,
-      hd:        urls.hd || '',
-      sd:        urls.sd || urls.hd || '',
-    };
-
-    pending.set(jid, info);
-
-    const menu =
-      `📘 *${info.title}*\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `📥 *Choose quality:*\n\n` +
-      `  *1.* 📹 HD Quality${info.isHdAvail ? ' ✅' : ''}\n` +
-      `  *2.* 📹 SD Quality\n\n` +
-      `_Reply:_ *!fbdl 1* or *!fbdl 2*`;
+    menu += `\n_Reply: !fbdl 1, !fbdl 2, etc._`;
 
     await sock.sendMessage(jid, { text: menu }, { quoted: msg });
 

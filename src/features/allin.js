@@ -1,7 +1,7 @@
 /**
  * All-in-One Video Downloader
  *
- * API: https://api.botcahx.eu.org/api/dowloader/allin?url=&apikey=GMauog6R
+ * API: https://apis.davidcyriltech.my.id/download/aiov2?url=<url>
  *
  * Supports: TikTok, Instagram, Twitter/X, Facebook, Pinterest, and more.
  *
@@ -11,8 +11,7 @@
 
 import axios from 'axios';
 
-const BOTCAHX_KEY = 'GMauog6R';
-const ALLIN_API   = 'https://api.botcahx.eu.org/api/dowloader/allin';
+const ALLIN_API   = 'https://apis.davidcyriltech.my.id/download/aiov2';
 const MAX_MB      = 50;
 
 // ── Platform detection ────────────────────────────────────────────────────────
@@ -59,7 +58,7 @@ export async function handleAllInOne(sock, msg, args) {
     });
 
     const { data } = await axios.get(ALLIN_API, {
-      params: { url, apikey: BOTCAHX_KEY },
+      params: { url },
       timeout: 35_000,
     });
 
