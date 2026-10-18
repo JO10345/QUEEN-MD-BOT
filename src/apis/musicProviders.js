@@ -6,7 +6,6 @@
  * ║  MUSIC_PROVIDERS=ytdl,cobalt,custom                  ║
  * ║                                                      ║
  * ║  Built-in providers:                                 ║
- * ║    ytdl    — ytdl-core (default, no API key)         ║
  * ║    cobalt  — cobalt.tools (free, no API key)         ║
  * ║    custom  — your own API (set MUSIC_API_URL)        ║
  * ╚══════════════════════════════════════════════════════╝
@@ -18,33 +17,11 @@
  *  3. Add its name to MUSIC_PROVIDERS in your .env
  */
 
-import ytdl from '@distube/ytdl-core';
 import axios from 'axios';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
 
-// ─── Provider 1: ytdl-core ────────────────────────────────────────────────────
-// Uses ytdl-core to extract the audio URL, then downloads via axios.
-// Works most of the time. May fail if YouTube blocks requests.
-async function providerYtdl(videoUrl) {
-  const info   = await ytdl.getInfo(videoUrl);
-  const format = ytdl.chooseFormat(info.formats, {
-    filter:  'audioonly',
-    quality: 'highestaudio',
-  });
-  if (!format?.url) throw new Error('[ytdl] No audio format found');
-
-  const res = await axios.get(format.url, {
-    responseType: 'arraybuffer',
-    timeout: 90_000,
-    headers: { 'User-Agent': UA },
-  });
-  const buf = Buffer.from(res.data);
-  if (buf.length < 5000) throw new Error('[ytdl] Downloaded file too small');
-  return buf;
-}
-
-// ─── Provider 2: cobalt.tools ─────────────────────────────────────────────────
+// ─── Provider 1: cobalt.tools ─────────────────────────────────────────────────
 // Free public API, no key required. Good fallback when ytdl is blocked.
 // Docs: https://cobalt.tools
 async function providerCobalt(videoUrl) {
@@ -78,7 +55,7 @@ async function providerCobalt(videoUrl) {
   return buf;
 }
 
-// ─── Provider 3: Custom API ───────────────────────────────────────────────────
+// ─── Provider 2: Custom API ───────────────────────────────────────────────────
 // Point MUSIC_API_URL in .env to your own audio download endpoint.
 // Your API must accept: GET /endpoint?url=<youtube_url>
 // and return the raw audio binary (mp3/mp4/m4a).
@@ -100,7 +77,6 @@ async function providerCustom(videoUrl) {
 // ─── Provider registry ────────────────────────────────────────────────────────
 // Add new providers here — key = name used in MUSIC_PROVIDERS env var
 const PROVIDERS = {
-  ytdl:   providerYtdl,
   cobalt: providerCobalt,
   custom: providerCustom,
 };
@@ -115,7 +91,7 @@ const PROVIDERS = {
  * @returns {Promise<Buffer>} Raw audio buffer
  */
 export async function downloadAudio(videoUrl) {
-  const order = (process.env.MUSIC_PROVIDERS || 'ytdl,cobalt')
+  const order = (process.env.MUSIC_PROVIDERS || 'cobalt,custom')
     .split(',')
     .map(p => p.trim().toLowerCase())
     .filter(Boolean);
