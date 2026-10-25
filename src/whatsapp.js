@@ -107,6 +107,11 @@ import {
 import { handleSticker }      from './features/sticker.js';
 import { handleTranslate }    from './features/translate.js';
 import { handleGroup }        from './features/group.js';
+import {
+  deleteWatchedMessage,
+  isWatchedGroupMessage,
+  restoreTimedGroupMutes,
+} from './features/groupModeration.js';
 import { handleGroupWelcome, isWelcomeEnabled, setWelcome } from './features/welcome.js';
 import { handleReminder }     from './features/reminder.js';
 import { handleImagine }      from './features/imagine.js';
@@ -792,7 +797,8 @@ function buildHelpText(category, botIsPublic = true, sessionId = '') {
     lines.push(`╭─── 👥 *Group Tools* ───╮`);
     if (FEATURES.group) lines.push(
       `  › ${P}kick  ·  ${P}add  ·  ${P}promote  ·  ${P}demote\n` +
-      `  › ${P}tagall  ·  ${P}gcstatus  ·  ${P}mute  ·  ${P}unmute  ·  ${P}groupinfo`
+      `  › ${P}tagall  ·  ${P}gcstatus  ·  ${P}mute [minutes]  ·  ${P}unmute  ·  ${P}groupinfo\n` +
+      `  › ${P}ban @user/reply  ·  ${P}unban @user/reply  ·  ${P}banlist`
     );
     lines.push(`  › ${P}antilink on/kick/off/list  — delete-only or warn→kick`);
     lines.push(`  › ${P}antichannel on/off/list  — block channel posts`);
@@ -898,7 +904,8 @@ function buildHelpText(category, botIsPublic = true, sessionId = '') {
     if (FEATURES.group) lines.push(
       `\n👥 *Admin Actions*\n` +
       `  › ${P}kick  ·  ${P}add  ·  ${P}promote  ·  ${P}demote\n` +
-      `  › ${P}tagall  ·  ${P}gcstatus  ·  ${P}mute  ·  ${P}unmute  ·  ${P}groupinfo`
+      `  › ${P}tagall  ·  ${P}gcstatus  ·  ${P}mute [minutes]  ·  ${P}unmute  ·  ${P}groupinfo\n` +
+      `  › ${P}ban @user/reply  ·  ${P}unban @user/reply  ·  ${P}banlist`
     );
     lines.push(`\n🚫 *Antilink*\n  › ${P}antilink on/kick/off/list`);
     lines.push(`\n📢 *Group Status*\n  › ${P}gcstatus  — mention all group members`);
@@ -1335,7 +1342,8 @@ async function handleCommand(sock, msg, jid, sender, fromMe, cmd, args, hasImg, 
   }
 
   // ── Group Management ───────────────────────────────────────────────────────
-  if (['kick','add','promote','demote','tagall','gcstatus','groupinfo','mute','unmute'].includes(cmd)) {
+  if (['kick','add','promote','demote','tagall','gcstatus','groupinfo','mute','unmute',
+       'ban','unban','banlist'].includes(cmd)) {
     if (!FEATURES.group) return sock.sendMessage(jid, { text: '❌ Group features disabled.' });
     return handleGroup(sock, msg, cmd, args, OWNER_NUMBER);
   }
@@ -1924,6 +1932,21 @@ function attachMessageHandler(
 
         const fromMe = msg.key.fromMe;
         const sender = fromMe ? (sock.user?.id || jid) : (msg.key.participant || jid);
+        const body  = getBody(msg) || '';
+        const isCmd  = body.startsWith(PREFIX);
+        const rawCmd = isCmd ? body.slice(PREFIX.length).split(/\s+/)[0] : '';
+        const cmd    = rawCmd.toLowerCase();
+        const args   = isCmd ? body.slice(PREFIX.length + rawCmd.length).trim() : '';
+
+        // Remove watched members' text and media before other automations can
+        // react to or process the content. Admin moderation commands stay usable.
+        if (!fromMe && jid.endsWith('@g.us') && isWatchedGroupMessage(jid, msg)) {
+          const moderationCommand = isCmd && ['unban', 'banlist'].includes(cmd);
+          if (!moderationCommand) {
+            await deleteWatchedMessage(sock, msg);
+            continue;
+          }
+        }
 
         // Cache pushName from every incoming message so group-event handlers
         // (promote/demote/welcome) can resolve display names even for contacts
@@ -1961,13 +1984,8 @@ function attachMessageHandler(
           if (captured) continue;
         }
 
-        const body  = getBody(msg);
         if (!body) continue;
 
-        const isCmd  = body.startsWith(PREFIX);
-        const rawCmd = isCmd ? body.slice(PREFIX.length).split(/\s+/)[0] : '';
-        const cmd    = rawCmd.toLowerCase();
-        const args   = isCmd ? body.slice(PREFIX.length + rawCmd.length).trim() : '';
         const hasImg = !!(
           msg.message?.imageMessage ||
           msg.message?.viewOnceMessage?.message?.imageMessage
@@ -2371,6 +2389,11 @@ export async function createSession(phone, {
       reconnecting.delete(phone);
       connectTimes.set(phone, Date.now());
       console.log(`✅ [${phone}] Connected as ${entry.jid}`);
+      try {
+        restoreTimedGroupMutes(sock);
+      } catch (error) {
+        console.warn(`[GroupModeration] Could not restore timed mutes: ${error.message}`);
+      }
       applyBotCustomization(sock).catch(() => {});
       onConnected(entry.jid);
 
