@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const API = 'https://apis.davidcyriltech.my.id';
-const DAVID_API_KEY = (process.env.DAVID_API_KEY || '').trim();
+const getDavidApiKey = () => (process.env.DAVID_API_KEY || '').trim();
 const clean = (v) => String(v || '').replace(/[\r\n]/g, ' ').trim();
 const pendingSpotify = new Map();
 const pendingSoundCloud = new Map();
@@ -9,8 +9,9 @@ const SPOTIFY_SELECTION_TTL_MS = 10 * 60 * 1000;
 const SOUNDCLOUD_SELECTION_TTL_MS = 10 * 60 * 1000;
 
 function davidApiHeaders() {
-  if (!DAVID_API_KEY) throw new Error('DAVID_API_KEY is not set in the bot environment.');
-  return { 'X-API-Key': DAVID_API_KEY, 'User-Agent': 'Queen-MD-Bot/3.1', Accept: 'image/*' };
+  const apiKey = getDavidApiKey();
+  if (!apiKey) throw new Error('DAVID_API_KEY is not set in the bot environment.');
+  return { 'X-API-Key': apiKey, 'User-Agent': 'Queen-MD-Bot/3.1', Accept: 'image/*' };
 }
 
 async function requestDavidImage(endpoint, prompt) {
@@ -103,6 +104,7 @@ function normalizeSpotifyResults(data) {
 }
 
 async function searchSpotify(query) {
+  const davidKey = getDavidApiKey();
   const providers = [
     {
       name: 'nexray',
@@ -113,8 +115,8 @@ async function searchSpotify(query) {
     {
       name: 'davidcyril',
       url: `${API}/spotify-v2`,
-      params: { query, ...(DAVID_API_KEY ? { apikey: DAVID_API_KEY } : {}) },
-      headers: DAVID_API_KEY ? { 'X-API-Key': DAVID_API_KEY } : undefined,
+      params: { query, ...(davidKey ? { apikey: davidKey } : {}) },
+      headers: davidKey ? { 'X-API-Key': davidKey } : undefined,
     },
   ];
   let lastError;
@@ -250,6 +252,7 @@ export async function handleSpotify(sock, msg, query) {
   }, { quoted: msg });
 
   let lastError = null;
+  const davidKey = getDavidApiKey();
   const downloaders = [
     {
       name: 'Nexray Spotify',
@@ -259,14 +262,14 @@ export async function handleSpotify(sock, msg, query) {
     {
       name: 'David spotifydl2',
       url: `${API}/spotifydl2`,
-      params: { url: link, ...(DAVID_API_KEY ? { apikey: DAVID_API_KEY } : {}) },
-      headers: DAVID_API_KEY ? { 'X-API-Key': DAVID_API_KEY } : undefined,
+      params: { url: link, ...(davidKey ? { apikey: davidKey } : {}) },
+      headers: davidKey ? { 'X-API-Key': davidKey } : undefined,
     },
     {
       name: 'David spotifydl',
       url: `${API}/spotifydl`,
-      params: { url: link, ...(DAVID_API_KEY ? { apikey: DAVID_API_KEY } : {}) },
-      headers: DAVID_API_KEY ? { 'X-API-Key': DAVID_API_KEY } : undefined,
+      params: { url: link, ...(davidKey ? { apikey: davidKey } : {}) },
+      headers: davidKey ? { 'X-API-Key': davidKey } : undefined,
     },
   ];
   for (const provider of downloaders) {
@@ -339,55 +342,92 @@ async function downloadSoundCloudTrack(sock, msg, track) {
     text: `⬇️ *Downloading:* ${clean(track.title || 'SoundCloud track')}`,
   }, { quoted: msg });
 
-  try {
-    const response = await axios.get('https://api.nexray.eu.cc/downloader/soundcloud', {
+  const davidKey = getDavidApiKey();
+  const providers = [
+    {
+      name: 'Nexray',
+      url: 'https://api.nexray.eu.cc/downloader/soundcloud',
       params: { url: track.url },
-      responseType: 'arraybuffer',
-      timeout: 60_000,
-      maxContentLength: 50 * 1024 * 1024,
-    });
-    let buffer = Buffer.from(response.data);
-    let contentType = response.headers?.['content-type'] || '';
+    },
+    ...(davidKey ? [
+      {
+        name: 'David Cyril SoundCloud downloader',
+        url: `${API}/download/soundcloud`,
+        params: { url: track.url, apikey: davidKey },
+        headers: { 'X-API-Key': davidKey },
+      },
+      {
+        name: 'David Cyril SoundCloud stream',
+        url: `${API}/soundcloud`,
+        params: { url: track.url, q: track.title || 'SoundCloud', apikey: davidKey },
+        headers: { 'X-API-Key': davidKey },
+      },
+    ] : []),
+  ];
+  let lastError;
+  let authRejected = false;
 
-    if (!isAudioFile(buffer, contentType)) {
-      const payload = parseJsonBuffer(buffer);
-      if (!payload) throw new Error('SoundCloud provider returned an invalid response');
-      if (payload?.success === false || payload?.status === false) {
-        throw new Error(payload?.message || payload?.error || 'SoundCloud download provider failed');
-      }
-      const downloadUrl = findDownloadUrl(payload);
-      if (!downloadUrl) {
-        throw new Error(payload?.message || payload?.error || 'SoundCloud provider returned no audio link');
-      }
-      const audio = await axios.get(downloadUrl, {
+  for (const provider of providers) {
+    try {
+      const response = await axios.get(provider.url, {
+        params: provider.params,
+        headers: provider.headers,
         responseType: 'arraybuffer',
-        timeout: 120_000,
+        timeout: 60_000,
         maxContentLength: 50 * 1024 * 1024,
-        maxBodyLength: 50 * 1024 * 1024,
-        headers: { 'User-Agent': 'Mozilla/5.0' },
       });
-      buffer = Buffer.from(audio.data);
-      contentType = audio.headers?.['content-type'] || '';
-    }
+      let buffer = Buffer.from(response.data);
+      let contentType = response.headers?.['content-type'] || '';
 
-    if (buffer.length < 5_000 || !isAudioFile(buffer, contentType)) {
-      throw new Error('SoundCloud provider did not return a valid audio file');
+      if (!isAudioFile(buffer, contentType)) {
+        const plainUrl = buffer.toString('utf8').trim();
+        let downloadUrl = /^https?:\/\/\S+$/i.test(plainUrl) ? plainUrl : '';
+        const payload = downloadUrl ? null : parseJsonBuffer(buffer);
+        if (payload?.success === false || payload?.status === false || payload?.error) {
+          throw new Error(payload?.message || payload?.error || 'Provider reported failure');
+        }
+        if (!downloadUrl && payload) downloadUrl = findDownloadUrl(payload);
+        if (!downloadUrl) {
+          throw new Error(payload?.message || payload?.error || 'Provider returned no audio link');
+        }
+        const audio = await axios.get(downloadUrl, {
+          responseType: 'arraybuffer',
+          timeout: 120_000,
+          maxContentLength: 50 * 1024 * 1024,
+          maxBodyLength: 50 * 1024 * 1024,
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+        });
+        buffer = Buffer.from(audio.data);
+        contentType = audio.headers?.['content-type'] || '';
+      }
+
+      if (buffer.length < 5_000 || !isAudioFile(buffer, contentType)) {
+        throw new Error('Provider did not return a valid audio file');
+      }
+      await sock.sendMessage(jid, {
+        audio: buffer,
+        mimetype: audioMimeFromBuffer(buffer, contentType),
+        ptt: false,
+      }, { quoted: msg });
+      await sock.sendMessage(jid, {
+        text: `✅ *${clean(track.title || 'SoundCloud track')}* downloaded.`,
+      }, { quoted: msg });
+      pendingSoundCloud.delete(jid);
+      console.log(`[SoundCloud] Download succeeded via ${provider.name}`);
+      return;
+    } catch (error) {
+      lastError = error;
+      authRejected ||= [401, 403].includes(error.response?.status);
+      console.warn(`[SoundCloud] ${provider.name} download failed: ${error.message}`);
     }
-    await sock.sendMessage(jid, {
-      audio: buffer,
-      mimetype: audioMimeFromBuffer(buffer, contentType),
-      ptt: false,
-    }, { quoted: msg });
-    await sock.sendMessage(jid, {
-      text: `✅ *${clean(track.title || 'SoundCloud track')}* downloaded.`,
-    }, { quoted: msg });
-    pendingSoundCloud.delete(jid);
-  } catch (error) {
-    console.warn(`[SoundCloud] download failed: ${error.message}`);
-    await sock.sendMessage(jid, {
-      text: `❌ SoundCloud download failed: ${clean(error.message || 'The provider returned no audio file.')}`,
-    }, { quoted: msg });
   }
+
+  const keyHint = authRejected
+    ? ' David Cyril rejected DAVID_API_KEY; verify the host secret value.'
+    : '';
+  await sock.sendMessage(jid, {
+    text: `❌ SoundCloud download failed. None of the download providers returned a valid audio file.${lastError?.response?.status ? ` (HTTP ${lastError.response.status})` : ''}${keyHint}`,
+  }, { quoted: msg });
 }
 
 export async function handleSoundCloudSearch(sock, msg, query) {
@@ -418,65 +458,93 @@ export async function handleSoundCloudSearch(sock, msg, query) {
   if (/^https?:\/\/(?:www\.|m\.)?soundcloud\.com\//i.test(input)) {
     return downloadSoundCloudTrack(sock, msg, { title: 'SoundCloud track', url: input });
   }
-  if (!DAVID_API_KEY) {
-    return sock.sendMessage(jid, {
-      text: '❌ SoundCloud search needs DAVID_API_KEY set in the bot environment.',
-    }, { quoted: msg });
+  const davidKey = getDavidApiKey();
+  const providers = [
+    ...(davidKey ? [{
+      name: 'David Cyril',
+      url: `${API}/search/soundcloud`,
+      params: { q: input, limit: 10, apikey: davidKey },
+      headers: { 'X-API-Key': davidKey },
+    }] : []),
+    {
+      name: 'Nexray',
+      url: 'https://api.nexray.eu.cc/search/soundcloud',
+      params: { q: input },
+    },
+  ];
+  let lastError;
+  let authRejected = false;
+
+  for (const provider of providers) {
+    try {
+      const { data } = await axios.get(provider.url, {
+        params: provider.params,
+        headers: provider.headers,
+        timeout: 30_000,
+      });
+      if (data?.status === false || data?.success === false || data?.error) {
+        throw new Error(data?.message || data?.error || 'SoundCloud search failed');
+      }
+
+      const candidates = [
+        data?.collection,
+        data?.results?.collection,
+        data?.results?.tracks,
+        data?.results?.items,
+        data?.results,
+        data?.result?.collection,
+        data?.result?.tracks,
+        data?.result?.items,
+        data?.data?.results,
+        data?.data?.tracks,
+        data?.data?.items,
+        data?.result,
+        data?.data,
+        data?.tracks,
+      ];
+      const rows = candidates.find(value => Array.isArray(value) && value.length) || [];
+      const tracks = rows.slice(0, 10).map((track) => {
+        const user = track?.user || track?.artist || track?.author || {};
+        const rawUrl = track?.permalink_url || track?.url || track?.link ||
+          track?.permalink || track?.uri || '';
+        const url = /^https?:\/\/(?:www\.|m\.)?soundcloud\.com\//i.test(rawUrl)
+          ? rawUrl
+          : '';
+        return {
+          title: track?.title || track?.name || 'Untitled track',
+          artist: typeof user === 'string' ? user
+            : Array.isArray(user) ? user.map(item => item?.username || item?.name).filter(Boolean).join(', ')
+            : (user?.username || user?.name || ''),
+          url,
+          duration: track?.duration || '',
+        };
+      }).filter(track => track.url);
+
+      if (!tracks.length) {
+        throw new Error(data?.message || 'No playable SoundCloud links were returned');
+      }
+      pendingSoundCloud.set(jid, { results: tracks, ts: Date.now() });
+      const list = tracks.slice(0, 5).map((track, index) =>
+        `${index + 1}. *${clean(track.title)}*${track.artist ? ` — ${clean(track.artist)}` : ''}` +
+        `${track.duration ? `\n   ⏱️ ${clean(track.duration)}` : ''}\n   🔗 ${track.url}`
+      ).join('\n\n');
+      console.log(`[SoundCloud] Search succeeded via ${provider.name}`);
+      return sock.sendMessage(jid, {
+        text: `☁️ *SoundCloud results for:* _${clean(input)}_\n\n${list}\n\n_Reply with *!soundcloud 1*, *!soundcloud 2*, etc. to download a result. List expires in 10 minutes._`,
+      }, { quoted: msg });
+    } catch (error) {
+      lastError = error;
+      authRejected ||= [401, 403].includes(error.response?.status);
+      console.warn(`[SoundCloud] search ${provider.name} failed: ${error.message}`);
+    }
   }
 
-  try {
-    const { data } = await axios.get(`${API}/search/soundcloud`, {
-      params: { text: input },
-      headers: { 'X-API-Key': DAVID_API_KEY },
-      timeout: 30_000,
-    });
-    if (data?.status === false || data?.success === false) {
-      throw new Error(data?.message || 'SoundCloud search failed');
-    }
-
-    const rows = [
-      data?.results,
-      data?.result,
-      data?.data,
-      data?.tracks,
-      data?.result?.tracks,
-      data?.result?.items,
-      data?.data?.results,
-      data?.data?.tracks,
-      data?.data?.items,
-    ].find(Array.isArray) || [];
-    const tracks = rows.slice(0, 5).map((track) => {
-      const user = track?.user || track?.artist || {};
-      return {
-        title: track?.title || track?.name || 'Untitled track',
-        artist: typeof user === 'string' ? user
-          : Array.isArray(user) ? user.map(item => item?.username || item?.name).filter(Boolean).join(', ')
-          : (user?.username || user?.name || ''),
-        url: track?.permalink_url || track?.url || track?.link || track?.permalink || '',
-        duration: track?.duration || '',
-      };
-    }).filter(track => track.url);
-
-    if (!tracks.length) {
-      throw new Error(data?.message || 'No playable SoundCloud links were returned');
-    }
-    pendingSoundCloud.set(jid, { results: tracks, ts: Date.now() });
-    const list = tracks.map((track, index) =>
-      `${index + 1}. *${clean(track.title)}*${track.artist ? ` — ${clean(track.artist)}` : ''}` +
-      `${track.duration ? `\n   ⏱️ ${track.duration}` : ''}\n   🔗 ${track.url}`
-    ).join('\n\n');
-    return sock.sendMessage(jid, {
-      text: `☁️ *SoundCloud results for:* _${clean(input)}_\n\n${list}\n\n_Reply with *!soundcloud 1*, *!soundcloud 2*, etc. to download a result. List expires in 10 minutes._`,
-    }, { quoted: msg });
-  } catch (error) {
-    console.warn(`[SoundCloud] search failed: ${error.message}`);
-    const keyHint = [401, 403].includes(error.response?.status)
-      ? '\nCheck that DAVID_API_KEY is set correctly in the bot environment.'
-      : '';
-    return sock.sendMessage(jid, {
-      text: `❌ SoundCloud search failed: ${error.message}${keyHint}`,
-    }, { quoted: msg });
-  }
+  const keyHint = authRejected
+    ? '\nThe David Cyril API rejected the configured key; verify DAVID_API_KEY in the host environment.'
+    : '';
+  return sock.sendMessage(jid, {
+    text: `❌ SoundCloud search failed: ${clean(lastError?.message || 'All search providers failed.')}${keyHint}`,
+  }, { quoted: msg });
 }
 
 export async function handleFlux(sock, msg, prompt) {

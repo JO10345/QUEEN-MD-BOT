@@ -6,9 +6,19 @@
  * !demote @user  — remove admin (admin only)
  * !groupinfo     — show group details
  * !tagall        — mention all members
- * !mute          — disable messaging (admin only)
+ * !mute [minutes]— disable messaging, optionally for a set time (admin only)
  * !unmute        — enable messaging (admin only)
+ * !ban @user     — auto-delete future messages from a member (admin only)
+ * !unban @user   — stop auto-deleting that member's messages
  */
+
+import {
+  addWatchedMember,
+  clearTimedGroupMute,
+  getWatchedMembers,
+  removeWatchedMember,
+  setTimedGroupMute,
+} from './groupModeration.js';
 
 function getBotJid(sock) {
   return sock.user?.id || sock.user?.lid || sock.user?.phoneNumber || '';
@@ -53,8 +63,53 @@ function phoneDigits(value) {
 }
 
 function getMentions(msg) {
-  const ctx = msg.message?.extendedTextMessage?.contextInfo;
+  const ctx = getContextInfo(msg);
   return ctx?.mentionedJid || [];
+}
+
+function getContextInfo(msg) {
+  const queue = [msg.message];
+  const seen = new Set();
+  while (queue.length && seen.size < 200) {
+    const value = queue.shift();
+    if (!value || typeof value !== 'object' || seen.has(value)) continue;
+    seen.add(value);
+    if (value.contextInfo && typeof value.contextInfo === 'object') return value.contextInfo;
+    for (const child of Object.values(value)) {
+      if (child && typeof child === 'object') queue.push(child);
+    }
+  }
+  return null;
+}
+
+function getTargetReferences(msg) {
+  const ctx = getContextInfo(msg);
+  const mentions = ctx?.mentionedJid || [];
+  if (mentions.length) return mentions;
+  return [ctx?.participant, ctx?.participantAlt].filter(Boolean);
+}
+
+function participantAliases(participant, references = []) {
+  return [
+    participant?.id,
+    participant?.phoneNumber,
+    participant?.lid,
+    participant?.jid,
+    ...references,
+  ].filter(value => typeof value === 'string' && value);
+}
+
+function displayParticipant(participant) {
+  const id = participant?.id || participant?.phoneNumber || participant?.lid || '';
+  return id ? `@${id.split('@')[0].split(':')[0]}` : 'member';
+}
+
+function parseMuteMinutes(raw) {
+  if (!raw?.trim()) return null;
+  const match = raw.trim().match(/^(\d+)\s*(?:m|min|mins|minute|minutes)?$/i);
+  if (!match) return NaN;
+  const minutes = Number(match[1]);
+  return minutes >= 1 && minutes <= 10_080 ? minutes : NaN;
 }
 
 async function getGroupInfo(sock, jid) {
@@ -246,11 +301,97 @@ export async function handleGroup(sock, msg, cmd, args, ownerNumber) {
     return;
   }
 
-  if (cmd === 'mute') {
+  if (cmd === 'ban' || cmd === 'unban') {
+    const references = getTargetReferences(msg);
+    if (!references.length) {
+      await sock.sendMessage(jid, {
+        text: `❌ Reply to a member's message or use *!${cmd} @user*.`,
+      }, { quoted: msg });
+      return;
+    }
+    const target = meta.participants.find(participant => sameIdentity(participant, references));
+    if (!target) {
+      await sock.sendMessage(jid, {
+        text: '❌ Could not match that mention/reply to a current group member.',
+      }, { quoted: msg });
+      return;
+    }
+    if (sameIdentity(target, sock.user)) {
+      await sock.sendMessage(jid, { text: '❌ The bot cannot watch-delete its own messages.' }, { quoted: msg });
+      return;
+    }
+
+    const aliases = participantAliases(target, references);
+    if (cmd === 'ban') {
+      if (!effectiveBotAdmin) { await needBotAdmin(); return; }
+      try {
+        const result = addWatchedMember(jid, aliases);
+        const action = result.added ? 'will now be deleted' : 'are already set to be deleted';
+        await sock.sendMessage(jid, {
+          text:
+            `🚫 Messages from ${displayParticipant(target)} ${action} in this group.\n` +
+            `This does not remove the member. Use *!unban @user* to stop auto-deleting their messages.`,
+          mentions: [target.id].filter(Boolean),
+        }, { quoted: msg });
+      } catch (error) {
+        await sock.sendMessage(jid, { text: `❌ Could not save the auto-delete rule: ${error.message}` }, { quoted: msg });
+      }
+      return;
+    }
+
     try {
+      const result = removeWatchedMember(jid, aliases);
+      await sock.sendMessage(jid, {
+        text: result.removed
+          ? `✅ Auto-delete stopped for ${displayParticipant(target)}.`
+          : `ℹ️ ${displayParticipant(target)} was not on this group's auto-delete list.`,
+        mentions: [target.id].filter(Boolean),
+      }, { quoted: msg });
+    } catch (error) {
+      await sock.sendMessage(jid, { text: `❌ Could not update the auto-delete list: ${error.message}` }, { quoted: msg });
+    }
+    return;
+  }
+
+  if (cmd === 'banlist') {
+    const watched = getWatchedMembers(jid);
+    if (!watched.length) {
+      await sock.sendMessage(jid, { text: '✅ No members are currently on this group’s auto-delete list.' }, { quoted: msg });
+      return;
+    }
+    const mentions = [];
+    const lines = watched.map((aliases, index) => {
+      const participant = meta.participants.find(member => sameIdentity(member, aliases));
+      const id = participant?.id || aliases[0];
+      if (id) mentions.push(id);
+      return `${index + 1}. @${id.split('@')[0].split(':')[0]}`;
+    });
+    await sock.sendMessage(jid, {
+      text: `🚫 *Auto-delete list for this group*\n${lines.join('\n')}\n\nUse *!unban @user* to remove a member.`,
+      mentions,
+    }, { quoted: msg });
+    return;
+  }
+
+  if (cmd === 'mute') {
+    const minutes = parseMuteMinutes(args || '');
+    if (Number.isNaN(minutes)) {
+      await sock.sendMessage(jid, {
+        text: '❌ Use *!mute* for an indefinite mute, or *!mute 5* to mute for 5 minutes (maximum 7 days).',
+      }, { quoted: msg });
+      return;
+    }
+    if (!effectiveBotAdmin) { await needBotAdmin(); return; }
+    try {
+      setTimedGroupMute(sock, jid, minutes ? minutes * 60_000 : 0);
       await sock.groupSettingUpdate(jid, 'announcement');
-      await sock.sendMessage(jid, { text: '🔇 Group muted — only admins can send messages.' }, { quoted: msg });
+      await sock.sendMessage(jid, {
+        text: minutes
+          ? `🔇 Group muted — only admins can send messages. It will automatically unmute in ${minutes} minute${minutes === 1 ? '' : 's'}.`
+          : '🔇 Group muted — only admins can send messages. Use *!unmute* to reopen the group.',
+      }, { quoted: msg });
     } catch (err) {
+      try { clearTimedGroupMute(jid); } catch {}
       await sock.sendMessage(jid, {
         text: `❌ Could not mute group.\nReason: ${err.message}\n\nMake sure *+${bareNum(botJid)}* is a group admin.`,
       }, { quoted: msg });
@@ -259,8 +400,14 @@ export async function handleGroup(sock, msg, cmd, args, ownerNumber) {
   }
 
   if (cmd === 'unmute') {
+    if (!effectiveBotAdmin) { await needBotAdmin(); return; }
     try {
       await sock.groupSettingUpdate(jid, 'not_announcement');
+      try {
+        clearTimedGroupMute(jid);
+      } catch (error) {
+        console.warn(`[GroupModeration] Could not clear saved mute for ${jid}: ${error.message}`);
+      }
       await sock.sendMessage(jid, { text: '🔊 Group unmuted — everyone can send messages.' }, { quoted: msg });
     } catch (err) {
       await sock.sendMessage(jid, {
