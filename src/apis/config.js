@@ -166,7 +166,7 @@ export const ytMp3APIs = [
   {
     name:    'eliteprotech',
     url:     'https://eliteprotech-apis.zone.id/ytmp3',
-    enabled: false, // ← captcha wall — re-enable if it clears
+    enabled: true, // ← captcha wall — re-enable if it clears
     params:  (url) => ({ url }),
     parse:   (data) => {
       if (!data?.status) throw new Error(data?.message || 'eliteprotech mp3 failed');
