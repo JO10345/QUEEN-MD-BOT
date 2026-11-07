@@ -213,7 +213,7 @@ export const ytMp3APIs = [
 export const dedicatedMusicAPIs = {
   music: {
     name: 'davidcyril-play',
-    url: 'https://apis.davidcyriltech.my.id/play',
+    url: 'https://apis.davidcyriltech.my.id/endpoints/download/#play-music-v2',
     requiresApiKey: true,
     params: (query) => ({ query }),
     parse: (data) => {
